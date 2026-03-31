@@ -175,12 +175,12 @@ def main():
     if args.make_plots:
         import matplotlib.pyplot as plt
 
-        def hist_save(series, name, bins=80, logy=False):
+        def hist_save(series, name, bins=80, logy=False, xrange=None):
             x = pd.to_numeric(series, errors="coerce").dropna().values
             if x.size == 0:
                 return
             plt.figure()
-            plt.hist(x, bins=bins)
+            plt.hist(x, bins=bins, range=xrange)
             if logy:
                 plt.yscale("log")
             plt.xlabel(name)
@@ -195,7 +195,14 @@ def main():
             hist_save(df["snr"], "snr", bins=100, logy=True)
         for p in PARAMS:
             if p in df.columns:
-                hist_save(df[p], p, bins=120, logy=False)
+                if p in ["tau_rise"]:
+                    hist_save(df[p], p, bins=40, xrange = (0,20), logy=False)
+                elif p in ["tau_fall"]:
+                    hist_save(df[p], p, bins=40, xrange = (10,30), logy=False)
+                elif p in ["sigma"]:
+                    hist_save(df[p], p, bins=40, xrange = (0,10), logy=False)
+                else:
+                    hist_save(df[p], p, bins=120, logy=False)
 
     print("\nWrote summary files to:", outdir)
     print(" - overall_summary.csv")

@@ -2,11 +2,11 @@ import numpy as np
 from numpy import fft
 from scipy.ndimage import gaussian_filter1d
 import matplotlib.pyplot as plt
-from scipy.signal import fftconvolve
+from scipy.signal import fftconvolve, find_peaks, stft
 
 dt_ns = 1.25
 DTYPE = np.float32
-POPT_GS = [75.99, 0.100, 1.927, 979.18665858, 1.177, -0.406]
+POPT_GS = [300, 1.06069764323418, 1.48020379040983, 709.474148772849, 1.1079849521775, -0.336218850361248]
 
 def gaussian_smeared_biexponential(t, A, tau_rise, tau_fall, t0, sigma):
     t = np.asarray(t, dtype=DTYPE)
@@ -50,6 +50,27 @@ def custom_lowpass_filter(N, dt_ns):
     filt[freqs_mhz > 300] = 0.0
     return filt
 
+def cosine_lowpass_filter(N, dt_ns):
+    cutoff = 450
+    freqs_hz = fft.fftfreq(N, d=dt_ns * 1e-9)  # Hz
+    freqs_mhz = np.abs(freqs_hz) / 1e6  # MHz
+    mask = freqs_mhz <= cutoff
+
+    filt = np.zeros(N, dtype=np.float64)
+    filt[mask] = np.cos(np.pi * freqs_mhz[mask] / (2 * cutoff))
+    return filt
+def pure_gaussian_filter(N, dt_ns):
+    cutoff_3sigma = 400
+    sigma = cutoff_3sigma / 3
+
+    freqs_hz = fft.fftfreq(N, d=dt_ns * 1e-9)
+    freqs_mhz = np.abs(freqs_hz) / 1e6
+
+    filt = np.exp(-0.5 * (freqs_mhz / sigma) ** 2)
+    filt[freqs_mhz > cutoff_3sigma] = 0
+
+    return filt
+
 # Deconvolution function
 def deconvolve_hits(m_t, r_calib, filt, eps=1e-12):
     """
@@ -82,12 +103,15 @@ noise_sigma = 0.8050
 n = np.random.normal(0, noise_sigma, size=N).astype(DTYPE)
 y_noisy = y + n + POPT_GS[5]  # measured waveform m(t)
 
-# r_calib must be same length as waveform,
+pedestal = POPT_GS[5]
+y_for_deconv = y + n              # zero-mean baseline
+
+# r_calib must be same length as waveform
 r_calib = np.zeros(N, dtype=np.float64)
 r_calib[:len(g)] = g
 
 filt = custom_lowpass_filter(N, dt_ns)
-u_rec = deconvolve_hits(y_noisy, r_calib, filt)
+u_rec = deconvolve_hits(y_for_deconv, r_calib, filt)
 
 # Plotting
 fig, ax1 = plt.subplots(figsize=(10, 6))
@@ -116,3 +140,80 @@ ax1.set_title("Deconvolution Reconstruction")
 
 plt.tight_layout()
 plt.show()
+
+# Find peaks in the reconstructed waveform
+peaks, props = find_peaks(u_rec, height=0.1, distance=int(5 / dt_ns))
+
+# Integrate pulse windows
+# For each peak, walk left/right to baseline crossing or valley between
+# consecutive peaks, then add padding (paper: 9 ns each side).
+pad_ns   = 9.0
+pad_bins = int(pad_ns / dt_ns)
+
+def find_integration_windows(u_rec, peaks, pad_bins, baseline_frac=0.0):
+    """Return (lo, hi) slice indices for each peak.
+
+    Inner boundaries: valley (minimum) between consecutive detected peaks.
+    Outer boundaries: walk to zero-crossing + pad_bins padding.
+    """
+    N = len(u_rec)
+    windows = []
+
+    for i, pk in enumerate(peaks):
+        # left edge
+        if i > 0:
+            # between this peak and the previous one, split at the valley
+            prev_pk = peaks[i - 1]
+            valley = prev_pk + np.argmin(u_rec[prev_pk:pk])
+            lo = valley
+        else:
+            # walk left until signal crosses baseline
+            lo = pk
+            while lo > 0 and u_rec[lo - 1] > baseline_frac:
+                lo -= 1
+            lo = max(lo - pad_bins, 0)
+
+        # right edge
+        if i < len(peaks) - 1:
+            next_pk = peaks[i + 1]
+            valley = pk + np.argmin(u_rec[pk:next_pk])
+            hi = valley
+        else:
+            hi = pk
+            while hi < N - 1 and u_rec[hi + 1] > baseline_frac:
+                hi += 1
+            hi = min(hi + pad_bins + 1, N)
+
+        windows.append((lo, hi))
+    return windows
+
+windows = find_integration_windows(u_rec, peaks, pad_bins)
+
+print(f"{'Peak #':<8} {'t_rec [ns]':<14} {'t_true [ns]':<14} {'height [PE]':<14} {'charge [PE]':<14} {'window [ns]'}")
+print("-" * 82)
+
+for i, pk in enumerate(peaks):
+    t_peak = t[pk]
+    h_peak = u_rec[pk]
+    lo, hi = windows[i]
+    charge = np.sum(u_rec[lo:hi])
+
+    # match to nearest true hit
+    j_match = np.argmin(np.abs(t_peak - t_hits))
+
+    win_str = f"[{t[lo]:.1f}, {t[min(hi, N-1)]:.1f}]"
+    print(f"{i:<8} {t_peak:<14.2f} {t_hits[j_match]:<14.2f} {h_peak:<14.4f} {charge:<14.4f} {win_str}")
+
+# Timing and charge residuals
+print()
+for i, pk in enumerate(peaks):
+    t_peak = t[pk]
+    j_match = np.argmin(np.abs(t_peak - t_hits))
+    dt_residual = t_peak - t_hits[j_match]
+
+    lo, hi = windows[i]
+    charge = np.sum(u_rec[lo:hi])
+
+    q_true = height[j_match]
+    ratio  = charge / q_true if q_true > 0 else float('nan')
+    print(f"Hit {j_match}: Δt = {dt_residual:+.2f} ns, charge = {charge:.4f} PE  (true {q_true:.2f}, ratio {ratio:.3f})")

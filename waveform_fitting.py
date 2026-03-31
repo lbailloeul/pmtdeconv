@@ -58,7 +58,7 @@ wave = -tree["d0_ch00"].array(library="np")[5]
 dt_ns = 1.25
 t = np.arange(len(wave)) * dt_ns
 
-# Window - using your fixed values
+# Custom hard coded fit window
 fit_start, fit_end = 555.5, 579.5
 mask = (t >= fit_start) & (t <= fit_end)
 t_fit, y_fit = t[mask], wave[mask]

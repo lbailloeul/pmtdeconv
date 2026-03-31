@@ -7,10 +7,12 @@ from matplotlib import pyplot as plt
 import pandas as pd
 from pathlib import Path
 from scipy.signal import find_peaks, peak_widths
+from statsmodels.stats.moment_helpers import cov2corr
 
 DTYPE = np.float64
 # MU_PED = -0.8464
 CHI2_CUT = 3.0
+A_FIXED = 1.0
 
 # def baseline_from_tail(wave, dt_ns, baseline_tail_ns=200.0):
 #     """
@@ -94,6 +96,9 @@ def gaussian_smeared_biexponential(t, A, tau_rise, tau_fall, t0, sigma):
 def model_biexponential(t, A, tau_rise, tau_fall, t0, sigma, pedestal):
     return gaussian_smeared_biexponential(t, A, tau_rise, tau_fall, t0, sigma) + pedestal
 
+def model_biexponential_fixed_A(t, tau_rise, tau_fall, t0, sigma, pedestal):
+    return model_biexponential(t, A_FIXED, tau_rise, tau_fall, t0, sigma, pedestal)
+
 # Fit helper
 def fit_biexp_single(t_fit, y_fit, bounds, p0, sigma_signal):
     # sigma_signal is your baseline noise estimate (scalar)
@@ -101,7 +106,7 @@ def fit_biexp_single(t_fit, y_fit, bounds, p0, sigma_signal):
     sigma_arr = np.full_like(y_fit, sigma_signal, dtype=np.float64)
 
     popt, pcov = curve_fit(
-        model_biexponential,
+        model_biexponential_fixed_A,
         t_fit, y_fit,
         p0=p0,
         bounds=bounds,
@@ -110,7 +115,7 @@ def fit_biexp_single(t_fit, y_fit, bounds, p0, sigma_signal):
         maxfev=20000,
     )
 
-    resid = y_fit - model_biexponential(t_fit, *popt)
+    resid = y_fit - model_biexponential_fixed_A(t_fit, *popt)
     chi2 = float(np.sum((resid / sigma_arr) ** 2))
     ndof = int(len(y_fit) - len(popt))
     red = chi2 / ndof if ndof > 0 else np.nan
@@ -195,8 +200,8 @@ def find_peak_windows_local_ratio(
         sigma_local = 1.4826 * float(np.median(np.abs(neigh - med)))  # MAD -> sigma
         sigma_local = max(sigma_local, 1e-12)
 
-        # require peak to be "ratio"-sigma above neighborhood
-        abs_floor = 5  # choose something meaningful in your units
+        # require peak to be ratio x sigma above neighborhood
+        abs_floor = 5
         if (z[p] > ratio * sigma_local) and (z[p] > abs_floor):
             keep.append(p)
 
@@ -291,7 +296,7 @@ def main():
     dt_ns = 1.25
     ped_k = 1.0 # number of sigmas your pedestal bounds will allow
 
-    out_dir = Path("./biexp_fits_run806_allruns")
+    out_dir = Path("biexp_fits_run806_allruns_LANL")
     plots_dir = out_dir / "plots"
     out_dir.mkdir(parents=True, exist_ok=True)
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -344,13 +349,13 @@ def main():
                                 flat_k=3.0,
                                 spike_k=4.0,
                             )
-                            ped_lo = ped_i - ped_k * noise_i
-                            ped_hi = ped_i + ped_k * noise_i
+                            # ped_lo = ped_i - ped_k * noise_i
+                            # ped_hi = ped_i + ped_k * noise_i
 
-                            bounds_event = (
-                                [0, 0.1, 1, 0, 0.1, ped_lo],
-                                [1000, 30, 200, 1200, 10, ped_hi],
-                            )
+                            # bounds_event = ( #A, tau_rise, tau_fall, t0, sigma, pedestal
+                            #     [0.01, 0.1, 0, 0.1, ped_lo],
+                            #     [30, 200, 1200, 10, ped_hi],
+                            # )
                         except RuntimeError as e:
                             row = {
                                 "run": run, "chan": ch, "branch": branch, "entry": i,
@@ -431,6 +436,10 @@ def main():
                             if len(t_fit) < 10:
                                 continue
 
+                            y_fit = (y_fit - ped_i) / 300.0
+                            sigma_normed = noise_i / 300.0
+                            ped_norm_slack = 3.0 * sigma_normed
+
                             prow = row.copy()
                             prow["peak_id"] = win["peak_id"]
                             prow["t_peak"] = win["t_peak"]
@@ -438,19 +447,24 @@ def main():
                             prow["fit_start"] = fit_start_i
                             prow["fit_end"] = fit_end_i
 
+                            bounds_peak = (
+                                [0.01, 0.1, fit_start_i, 0.1, -ped_norm_slack],
+                                [30.0, 200.0, fit_end_i, 10.0, ped_norm_slack],
+                            )
+
                             p0_event = [
-                                max(1.0, win["peak_amp"]),  # A
-                                5.0,  # tau_rise
-                                30.0,  # tau_fall
+                                1.5,  # tau_rise
+                                1.5,  # tau_fall
                                 win["t_peak"],  # t0
-                                2.0,  # sigma (ns)
-                                ped_i,  # pedestal start
+                                1.0,  # sigma
+                                0,  # pedestal start
                             ]
 
                             try:
                                 popt, pcov, chi2, ndof, red = fit_biexp_single(
-                                    t_fit, y_fit, bounds=bounds_event, p0=p0_event, sigma_signal = noise_i)
-
+                                    t_fit, y_fit,  bounds=bounds_peak, p0=p0_event, sigma_signal = sigma_normed)
+                                # print(cov2corr(pcov))
+                                # print(run,idx,i)
                                 perr = np.full_like(popt, np.nan, dtype=float)
                                 if pcov is not None and np.all(np.isfinite(pcov)):
                                     perr = np.sqrt(np.clip(np.diag(pcov), 0.0, np.inf))
@@ -466,9 +480,11 @@ def main():
                                     "chi2": chi2,
                                     "ndof": ndof,
                                     "red_chi2": red,
-                                    "A": popt[0], "tau_rise": popt[1], "tau_fall": popt[2], "t0": popt[3], "sigma": popt[4], "pedestal": popt[5],
-                                    "A_err": perr[0], "tau_rise_err": perr[1], "tau_fall_err": perr[2], "t0_err": perr[3],
-                                    "sigma_err": perr[4], "pedestal_err": perr[5],
+                                    "A": A_FIXED,
+                                    "tau_rise": popt[0], "tau_fall": popt[1], "t0": popt[2], "sigma": popt[3],
+                                    "pedestal": popt[4] * 300.0 + ped_i,
+                                    "A_err": 0.0, "tau_rise_err": perr[0], "tau_fall_err": perr[1], "t0_err": perr[2],
+                                    "sigma_err": perr[3], "pedestal_err": perr[4] * 300.0,
                                     "reason": "",
                                 })
 
@@ -479,17 +495,49 @@ def main():
                                     t_fine = np.linspace(fit_start_i, fit_end_i, 1000)
                                     plt.plot(
                                         t_fine,
-                                        model_biexponential(t_fine, *popt),
+                                        model_biexponential(t_fine, A_FIXED, *popt),
                                         "r--",
                                         label=f"Fit peak {win['peak_id']} | red $\\chi^2$={red:.2f}",
                                     )
                                     plt.axvline(win["t_peak"], linestyle="--", alpha=0.25)
+
+                                    ax = plt.gca()
+                                    lines = [
+                                        f"A = {A_FIXED:.1f} V",
+                                        f"#tau_{{rise}} = {popt[0]:.3f} #pm {perr[0]:.3f} ns",
+                                        f"#tau_{{fall}} = {popt[1]:.3f} #pm {perr[1]:.3f} ns",
+                                        f"t_{{0}} = {popt[2]:.3f} #pm {perr[2]:.3f} ns",
+                                        f"#sigma = {popt[3]:.3f} #pm {perr[3]:.3f} ns",
+                                        f"ped = {popt[4]:.4f} #pm {perr[4]:.4f}",
+                                    ]
+
+                                    # convert ROOT-style #cmd to matplotlib $\cmd$
+                                    def root_to_mpl(s):
+                                        s = s.replace("#pm", "±")
+                                        s = s.replace("#tau", "τ")
+                                        s = s.replace("#sigma", "σ")
+                                        return s
+
+                                    x_ndc, y_ndc, dy = 0.97, 0.95, 0.045
+                                    for k, line in enumerate(lines):
+                                        ax.text(
+                                            x_ndc, y_ndc - k * dy,
+                                            root_to_mpl(line),
+                                            transform=ax.transAxes,
+                                            fontsize=9, color="red",
+                                            verticalalignment="top",
+                                            horizontalalignment="right",
+                                            fontfamily="monospace",
+                                        )
+
                                     plt.title(f"Run806 entry {i} ({branch}) peak {win['peak_id']}")
                                     plt.xlabel("Time (ns)")
                                     plt.ylabel("Amplitude (V)")
                                     plt.legend()
                                     plt.tight_layout()
-                                    plt.savefig(plots_dir / f"run{run:02d}_fit_{branch}_entry_{i:04d};{win['peak_id']}.png",dpi=150)
+                                    plt.savefig(
+                                        plots_dir / f"run{run:02d}_fit_{branch}_entry_{i:04d};{win['peak_id']}.png",
+                                        dpi=150)
                                     plt.close()
 
                             except Exception as e:
