@@ -1,0 +1,13 @@
+# Development / test dependencies for pmtdeconv.
+#
+# These supplement the runtime dependencies declared in pyproject.toml's
+# [project.dependencies] table. From a clean checkout:
+#
+#     pip install -r tests/requirements-dev.txt        # tests only
+#     pip install -e .[dev]                            # tests + editable install
+#
+# pyproject.toml's [project.optional-dependencies.dev] mirrors this list;
+# keep both in sync.
+
+pytest>=7.4
+pytest-cov>=4.1

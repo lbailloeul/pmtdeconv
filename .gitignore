@@ -1,0 +1,54 @@
+# Generated outputs — regenerate by running the pipeline scripts
+outputs/
+outputs_milliQ_full/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+build/
+*.egg-info/
+
+# Generated images and PDFs in source trees
+sandbox/*.png
+sandbox/*.pdf
+
+# macOS metadata
+.DS_Store
+
+# Build-on-demand regime fixtures for `pmtdeconv tune` (PR 10).
+tests/fixtures/regime/
+
+# Tune outputs.
+outputs/tune_*/
+
+# Legacy / pre-CLI analysis scripts kept around for reference but not
+# part of the deployable pmtdeconv surface (PR 10 cleanup).
+legacy/
+
+# Local agent/editor state.
+.agents/
+.claude/
+.junie/
+
+# AI-agent guidance + memory files (kept local; not version-controlled). The
+# bare names (no leading slash) match at any depth in the tree.
+CLAUDE.md
+AGENTS.md
+MEMORY.md
+
+# Agent-generated audit / bug-scan reports (kept local, not shared). Leaves
+# docs/ open for genuine user-facing docs added later.
+docs/AUDIT-*.md
+docs/bug-scans/
+
+# Test-fixture DATA (kept out of git; regenerable). The test CODE and the
+# generators (tests/fixtures/make_synth_*.py, regimes.py) stay tracked — on a
+# fresh checkout, rebuild the synthetic ROOT inputs with those scripts, then
+# regenerate the golden reference outputs per the recipe in the
+# tests/test_golden_fixture.py docstring before running the byte-identity suite.
+tests/fixtures/*.root
+tests/fixtures/*.json
+tests/fixtures/processed/
+tests/fixtures/golden/

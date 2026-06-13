@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pmtdeconv"
+version = "0.2.0"
+description = "Unified CLI for the PMT-waveform deconvolution toolkit (Na22 / Cd109 / MilliQan / LANL)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "L. Bailloeul"},
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "uproot>=5.0",
+    "awkward>=2.0",
+    "PyWavelets>=1.4",
+    "Pillow>=10.0",   # used by timewalk_gif_impl for animated GIF stitching
+    "tqdm>=4.65",     # progress bars in timewalk_gif_impl
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+]
+
+[project.scripts]
+pmtdeconv = "pmtdeconv.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/lbailloeul/pmtdeconv"   # placeholder
+Source = "https://github.com/lbailloeul/pmtdeconv"
+
+# ─── setuptools ────────────────────────────────────────────────────────
+[tool.setuptools.packages.find]
+include = ["pmtdeconv*"]
+exclude = ["tests*", "legacy*", "outputs*", "docs*"]
+
+# ─── pytest ────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+minversion = "7.4"
+testpaths = ["tests"]
+addopts = "-q"
+# Default we skip the legacy/ tree if any pytest-discoverable files
+# end up there. Goldens live under tests/fixtures/golden/ and are
+# read-only inputs, not test modules.
+norecursedirs = ["legacy", "outputs", "tests/fixtures/golden"]
