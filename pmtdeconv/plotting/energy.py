@@ -30,7 +30,7 @@ from pmtdeconv.utils import (                                       # noqa: E402
 # `hits` (pipeline.denoise.denoise), so the plot's "wavelet" curve is provably
 # the identical transform — no more divergent hardcoded module constants.
 from pmtdeconv.pipeline.denoise import denoise
-from pmtdeconv.plotting.style import use_minimal_style, minimal_axes
+from pmtdeconv.plotting.style import use_root_style, style_root_axes
 
 # Overlay methods + plot styles (shared with the legacy CLI)
 METHODS = ["raw", "fft", "stft", "wavelet"]
@@ -225,7 +225,7 @@ def render_energy_hist(
                              **{f"qual_{m}":  qual[m][j]  for m in METHODS}))
 
     # 2 rows (whole / qualifying) × len(channels) cols
-    use_minimal_style()
+    use_root_style()
     n_cols = len(channels)
     fig, axes = plt.subplots(2, n_cols, figsize=(6.5 * n_cols, 9),
                               squeeze=False)
@@ -241,7 +241,7 @@ def render_energy_hist(
             ax.hist(v, bins=edges, histtype="step", lw=1.6, color=col_, label=lab)
         ax.set_title(f"d0_ch{c} — whole-waveform")
         ax.set_yscale("log"); ax.set_xlabel("charge [a.u.]"); ax.set_ylabel("events / bin")
-        ax.legend(); minimal_axes(ax)
+        ax.legend(); style_root_axes(ax)
 
         ax = axes[1][col]
         for m in ["fft", "stft", "wavelet"]:
@@ -250,7 +250,7 @@ def render_energy_hist(
             ax.hist(v, bins=edges, histtype="step", lw=1.6, color=col_, label=lab)
         ax.set_title(f"d0_ch{c} — qualifying pulses")
         ax.set_yscale("log"); ax.set_xlabel("charge [a.u.]"); ax.set_ylabel("events / bin")
-        ax.legend(); minimal_axes(ax)
+        ax.legend(); style_root_axes(ax)
 
     fig.tight_layout()
     png_path = out_dir / "energy_hist.png"

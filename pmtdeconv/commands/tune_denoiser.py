@@ -115,8 +115,8 @@ def _plot(regime, rows, out_dir, ref_cutoff):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from pmtdeconv.plotting.style import use_minimal_style, minimal_axes
-    use_minimal_style()
+    from pmtdeconv.plotting.style import use_root_style, style_root_axes
+    use_root_style()
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
     for label, color, _cfg in CONFIGS:
         pts = sorted([(r["cutoff_mhz"], r["median_fwhm_ns"]) for r in rows
@@ -131,7 +131,7 @@ def _plot(regime, rows, out_dir, ref_cutoff):
     ax.set_ylabel("reconstructed FWHM [ns] (median)")
     ax.set_title(f"STFT-vs-wavelet verdict — regime {regime}")
     ax.legend(fontsize=9)
-    minimal_axes(ax)
+    style_root_axes(ax)
     fig.tight_layout()
     p = out_dir / f"fwhm_vs_cutoff_{regime}.png"
     fig.savefig(p, dpi=140)

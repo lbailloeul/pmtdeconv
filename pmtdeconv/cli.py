@@ -59,7 +59,10 @@ SUBCOMMANDS = {
         "marginals":    "plot_marginals",
         "energy":       "plot_energy",
         "analyze":      "plot_analyze",
-        "deconv-value": "plot_deconv_value",
+        # "deconv-value" demoted to legacy/ (2026-06-13): the multi-hit + nPE
+        # "deconvolution value" figures aren't convincing on synthetic data —
+        # restore from legacy/plotting/ + re-add this line once validated on
+        # real Na22 data with genuine pile-up.
     },
     # `info` is single-level — its module attaches its own sub-parsers
     # for datasets/presets/template/offline-file.
@@ -110,7 +113,6 @@ LEAF_HELP = {
     ("plot",     "marginals"): "CH1-vs-CH2 area heatmap + 1D marginals.",
     ("plot",     "energy"):    "Four-method energy histograms (raw/FFT/STFT/wavelet).",
     ("plot",     "analyze"):   "Diagnostic plots from a deconv-pulse CSV (legacy/diagnostic).",
-    ("plot", "deconv-value"):  "Charge-vs-t_peak + nPE/multi-hit (the deconvolution-value figures).",
     ("info",     None):        "Read-only introspection of registries.",
     ("config",   None):        "Show and resolve datasets, presets, and overrides.",
     ("results",  None):        "List, inspect, and locate prior CLI results.",

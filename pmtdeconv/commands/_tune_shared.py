@@ -210,8 +210,8 @@ def save_sweep_curves(sweep_df: pd.DataFrame, axis_col: str,
         sub_sorted = sub.sort_values(axis_col)
         if len(sub_sorted) == 0:
             continue
-        from pmtdeconv.plotting.style import use_minimal_style, minimal_axes
-        use_minimal_style()
+        from pmtdeconv.plotting.style import use_root_style, style_root_axes
+        use_root_style()
         fig, axes = plt.subplots(3, 1, figsize=(7.0, 7.0), sharex=True)
         x = sub_sorted[axis_col].astype(float).values
         eff = sub_sorted["efficiency"].astype(float).values
@@ -247,7 +247,7 @@ def save_sweep_curves(sweep_df: pd.DataFrame, axis_col: str,
                 ax.axvline(float(winner_x), color="red", lw=1.0, ls=":")
             axes[0].set_title(f"winner = {winner_x:g} MHz", fontsize=11)
         for ax in axes:
-            minimal_axes(ax)
+            style_root_axes(ax)
 
         fig.tight_layout()
         png_path = out_dir / f"sweep_curves_{regime}.png"

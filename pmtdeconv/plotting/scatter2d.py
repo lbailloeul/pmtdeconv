@@ -16,7 +16,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from pmtdeconv.plotting.style import use_minimal_style, minimal_axes
+from pmtdeconv.plotting.style import use_root_style, style_root_axes
 
 
 def plot_1d(df, run_label: str, amax: float, bins: int,
@@ -30,7 +30,7 @@ def plot_1d(df, run_label: str, amax: float, bins: int,
     """
     col = metric
     label = "Deconvolved area [a.u.]" if metric == "area" else "Peak height [a.u.]"
-    use_minimal_style()
+    use_root_style()
     fig, ax = plt.subplots(figsize=(9, 5))
     edges = np.linspace(0, amax, bins + 1)
     for ch, color in [("ch1", "C0"), ("ch2", "C1")]:
@@ -42,7 +42,7 @@ def plot_1d(df, run_label: str, amax: float, bins: int,
     ax.set_xlabel(label)
     ax.set_ylabel("Events")
     ax.legend()
-    minimal_axes(ax)
+    style_root_axes(ax)
     fig.tight_layout()
     out = out_dir / f"deconv_{metric}_1d_run{run_label}{tag}.pdf"
     fig.savefig(out, dpi=200, transparent=True)

@@ -19,6 +19,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from pmtdeconv.plotting.style import use_root_style, style_root_axes
+
 from pmtdeconv.io.manifest import maybe_dry_run_exit, write_manifest
 from pmtdeconv.io.output_paths import (
     resolve_area_csv,
@@ -83,6 +85,7 @@ def save_curve_png(summary, run_id: str, out_path: Path,
                    scan_branch: str = "d0_ch2") -> None:
     """Plot the timewalk curve (mean_dt vs a_scan_center) with error bars."""
     ref_lab, scan_lab = _branch_label(ref_branch), _branch_label(scan_branch)
+    use_root_style()
     fig, ax = plt.subplots(figsize=(8, 5))
     scale = 1e-3 if area_units == "nVs" else 1.0
     cx = summary["ch2_center"] * scale
@@ -98,7 +101,7 @@ def save_curve_png(summary, run_id: str, out_path: Path,
     ax.set_xlabel(f"{scan_lab} area [{area_units}]")
     ax.set_ylabel(rf"$\Delta t$ ({scan_lab} - {ref_lab}) [ns]")
     ax.set_title(f"Run {run_id} — timewalk")
-    ax.grid(True, alpha=0.3)
+    style_root_axes(ax)
     ax.legend()
     fig.tight_layout()
     fig.savefig(out_path, dpi=130)
