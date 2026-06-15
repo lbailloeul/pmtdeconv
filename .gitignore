@@ -1,0 +1,27 @@
+# ── Large data — never version-controlled (raw DAQ output / regenerable) ──
+*.dat
+*.root
+processed/
+
+# ── External upstream clone ──
+# We vendor ONLY the needed scripts into dataprep/drs/ (see dataprep/drs/NOTICE.md),
+# so the full mcitron/drsProcessing clone is not part of this package. Keep it
+# locally for the raw binaries if you like; it is its own git repo.
+/drsProcessing/
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+
+# ── Environments ──
+.venv/
+venv/
+env/
+
+# ── macOS ──
+.DS_Store

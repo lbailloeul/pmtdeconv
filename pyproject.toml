@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pmtdeconv-dataprep"
+version = "0.1.0"
+description = "DAQ -> ROOT data-prep for the PMT deconvolution pipeline (DRS binary decode + waveform flattening)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "L. Bailloeul"}]
+
+# IMPORTANT: this package depends on PyROOT (``import ROOT``), which is NOT
+# pip-installable. Install ROOT via conda (``conda install -c conda-forge root``)
+# or a system ROOT build, then ``pip install -e .`` for the pip-managed bits.
+# That hard ROOT dependency is exactly *why* dataprep is a SEPARATE package from
+# ``pmtdeconv`` — the deconvolution tool stays pure-Python (uproot only) and
+# ``pip install -e .``-able, so collaborators who already have ROOT files never
+# need ROOT installed. The two tools meet at the data-root naming contract
+# (``<data-root>/<dataset>/{Run<N>.root, flattened_Run<N>.root}``).
+dependencies = [
+    "numpy>=1.21",
+    # ROOT — install separately via conda/system (see note above).
+]
+
+[project.scripts]
+dataprep = "dataprep.prep:main"
+
+[tool.setuptools.packages.find]
+include = ["dataprep*"]
+exclude = ["drsProcessing*", "processed*", "Analysis*"]
+
+# The vendored DRS scripts under dataprep/drs/ are invoked by path (subprocess),
+# not imported as a package, so ship them as package data.
+[tool.setuptools.package-data]
+dataprep = ["drs/*.py", "drs/*.md"]
