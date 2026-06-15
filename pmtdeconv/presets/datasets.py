@@ -19,6 +19,7 @@ Cross-references:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple, Union
@@ -26,13 +27,44 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 from pmtdeconv import PROJECT_ROOT
 
 
-# Path conventions:
-# - The toolkit lives at .../timewalksim/bailloeulScripts/
-# - Data lives at .../LANL/data/<dataset_dir>/
-# - Resolve PROJECT_ROOT.parents[2] = .../LANL/  (matches the existing
-#   `PROJECT_ROOT.parent.parent.parent / "data"` pattern in the legacy
-#   scripts).
-DATA_DIR = PROJECT_ROOT.parent.parent.parent / "data"
+# Path conventions: per-dataset files live under a base data root in
+# ``<DATA_DIR>/<dataset_dir>/``. The base is resolved portably (the old fixed
+# ``PROJECT_ROOT.parent.parent.parent / "data"`` guess only worked at one
+# checkout depth — it printed nonexistent paths on other machines):
+#
+#   1. ``PMTDECONV_DATA_ROOT`` environment variable (authoritative override), then
+#   2. the first existing ``data/`` directory walking up from the package
+#      (handles the common "repo and data/ side by side" layout), then
+#   3. the legacy fixed-depth fallback (kept so existing checkouts + CI are
+#      byte-identical).
+#
+# ``--data-root`` still overrides the *per-dataset* directory directly for
+# ad-hoc / flat layouts.
+
+# A candidate ``data/`` dir is only auto-selected if it actually looks like a
+# data root (contains a known per-dataset subdir) — so a stray empty ``data/``
+# higher in the tree can't shadow the real one.
+_DATA_MARKERS = ("Na22_lab", "Cd109_lab", "1000_MQ_real",
+                 "806_real", "835_real", "movedBar")
+
+
+def _resolve_data_root(start: Optional[Path] = None) -> Path:
+    """Resolve the base data root: ``PMTDECONV_DATA_ROOT`` env → nearest
+    marker-bearing ``data/`` walking up from ``start`` → legacy fallback.
+    ``start`` defaults to the package dir; it is a parameter only for testing."""
+    env = os.environ.get("PMTDECONV_DATA_ROOT")
+    if env:
+        return Path(env).expanduser()
+    root = start or PROJECT_ROOT
+    # bounded discovery: package dir + a few parents, requiring a real marker
+    for base in [root, *list(root.parents)[:4]]:
+        cand = base / "data"
+        if cand.is_dir() and any((cand / m).is_dir() for m in _DATA_MARKERS):
+            return cand
+    return root.parent.parent.parent / "data"   # legacy fallback
+
+
+DATA_DIR = _resolve_data_root()
 
 # Cd109 stacked-unlocked SPE template — the "winning" template settled
 # during the 2026-05 session and now the default for Na22 deconv.

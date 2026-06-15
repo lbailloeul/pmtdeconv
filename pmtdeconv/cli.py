@@ -318,7 +318,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Third-party scientific-stack modules pmtdeconv imports lazily. A missing one
+# means "you ran from source without `pip install -e .`" — turn the raw
+# ModuleNotFoundError traceback into a one-line install instruction.
+_THIRD_PARTY_DEPS = {"numpy", "scipy", "pandas", "matplotlib", "uproot",
+                     "awkward", "pywt", "PIL", "tqdm"}
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    try:
+        return _dispatch(argv)
+    except ModuleNotFoundError as exc:
+        name = (getattr(exc, "name", "") or "").split(".")[0]
+        if name in _THIRD_PARTY_DEPS:
+            raise SystemExit(
+                f"\nMissing dependency '{name}'. pmtdeconv needs its scientific "
+                f"stack installed.\n"
+                f"  Install everything in one step (from the bailloeulScripts/ "
+                f"directory containing pyproject.toml):\n"
+                f"      pip install -e .\n"
+                f"  (pulls in numpy, scipy, pandas, matplotlib, uproot, awkward, "
+                f"PyWavelets, …)\n"
+            ) from exc
+        raise
+
+
+def _dispatch(argv: Optional[Sequence[str]] = None) -> int:
     root = _build_root_parser()
     args, remaining = root.parse_known_args(argv)
 

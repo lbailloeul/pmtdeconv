@@ -34,7 +34,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     g = parser.add_argument_group("raw_area drs")
     g.add_argument("--root", type=str, default=None,
                    help="DRSprocessing ROOT file. Default: "
-                        "<data-root>/processed/Run<RUN>.root.")
+                        "<data-root>/Run<RUN>.root.")
     g.add_argument("--board", type=str, default="2984",
                    help="Board prefix in DRSprocessing branch names "
                         "(default 2984).")
@@ -53,34 +53,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def _resolve_root_path(args, run_num: int, settings) -> Path:
     """Resolve the DRSprocessing ROOT for a given run.
 
-    Precedence: ``--root`` flag > ``--data-root / settings.data_root``
-    (Bug-fix 7, 2026-05-30 scan) > legacy convention
-    (``data_processing/drsProcessing/processed/Run<RUN>.root``).
-
-    The middle rung handles users who stage processed ROOT files outside
-    the default tree; they should be able to point at any directory
-    containing ``processed/Run<N>.root`` via the standard ``--data-root``.
+    Precedence: ``--root`` flag > ``<data-root>/Run<N>.root`` > legacy
+    default. The DRSprocessing file sits **directly** under the data root —
+    no ``processed/`` subdir is required (point ``--data-root`` at whatever
+    directory holds it, or pass ``--root`` for an arbitrary path).
     """
     if args.root:
         return Path(args.root)
     if settings.data_root is not None:
-        # Two conventions supported:
-        #   <data-root>/processed/Run<N>.root  (LANL DRSprocessing layout)
-        #   <data-root>/Run<N>.root            (flat layout)
-        proc_path = Path(settings.data_root) / "processed" / f"Run{run_num}.root"
-        if proc_path.exists():
-            return proc_path
-        flat_path = Path(settings.data_root) / f"Run{run_num}.root"
-        if flat_path.exists():
-            return flat_path
-        # Even if the file isn't there yet, return the processed/-style
-        # path so the downstream error message points users at the
-        # canonical location they probably want.
-        return proc_path
-    # Legacy convention used during the session
-    return (PROJECT_ROOT.parent.parent.parent
-            / "data_processing" / "drsProcessing" / "processed"
-            / f"Run{run_num}.root")
+        return Path(settings.data_root) / f"Run{run_num}.root"
+    # Legacy default when neither --root nor --data-root is given.
+    return PROJECT_ROOT.parent.parent.parent / "data" / f"Run{run_num}.root"
 
 
 def run(args: argparse.Namespace) -> int:

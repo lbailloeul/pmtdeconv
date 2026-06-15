@@ -52,11 +52,48 @@ bailloeulScripts/
 
 The top-level has just **4 visible entries** (`pmtdeconv/`, `tests/`,
 `CLAUDE.md`, `README.md`) plus two gitignored dirs. `pmtdeconv/` is
-pip-installable as-is — no runtime dependencies outside its own tree.
+**self-contained** — it imports nothing from sibling directories, only from
+within its own tree and from the scientific Python stack (numpy, scipy, pandas,
+matplotlib, uproot, awkward, PyWavelets), which `pip install -e .` pulls in
+automatically (see [Install](#install)).
+
+## Install
+
+`pmtdeconv` needs the scientific Python stack (numpy, scipy, pandas, matplotlib,
+uproot, awkward, PyWavelets). **One editable install pulls all of them in** —
+you do not pip-install them one by one:
+
+```bash
+cd bailloeulScripts            # the dir containing pyproject.toml
+pip install -e .               # runtime deps; or `pip install -e .[dev]` for pytest too
+```
+
+Use a fresh environment (conda/venv) to avoid clashes. After this,
+`python -m pmtdeconv --help` (and the `pmtdeconv` console script) work from
+anywhere. If you see `ModuleNotFoundError: No module named 'uproot'` (or scipy,
+pandas, …), you ran from source without installing — run the command above.
+
+### Pointing at your data
+
+Dataset presets resolve files under a base **data root**. It is found in this
+order: the `PMTDECONV_DATA_ROOT` environment variable → the first `data/`
+directory found walking up from the package → a legacy fallback. So either:
+
+```bash
+export PMTDECONV_DATA_ROOT=/path/to/your/data    # used by every command + `info datasets`
+# or, per-invocation, point straight at the directory holding the ROOT files:
+python -m pmtdeconv hits --dataset na22 --runs 65213 --data-root /path/to/run/files
+```
+
+`info datasets` prints the resolved paths so you can confirm they exist before a
+run. (`--data-root` overrides the *per-dataset* directory directly, which is the
+simplest option when your files are not laid out as `<root>/Na22_lab/…`.)
 
 ## Quick start
 
 ```bash
+# 0. Install first (see above): cd bailloeulScripts && pip install -e .
+
 # Discover the CLI surface:
 python -m pmtdeconv --help                       # command tree
 python -m pmtdeconv info datasets                # 6 dataset presets

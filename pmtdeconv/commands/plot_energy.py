@@ -29,7 +29,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--nbins", type=int, default=120)
     g.add_argument("--proc-root", type=str, default=None,
                    help="DRSprocessing ROOT file. Default: "
-                        "data_processing/drsProcessing/processed/Run<RUN>.root.")
+                        "<data-root>/Run<RUN>.root.")
     g.add_argument("--template", type=str, default=None,
                    help="SPE template CSV. Default: dataset's preset.")
     g.add_argument("--board", type=int, default=2984,
@@ -75,16 +75,20 @@ def run(args: argparse.Namespace) -> int:
             "or first run `pmtdeconv template build && aggregate "
             f"--dataset {settings.dataset or 'cd109'}`.")
 
+    # DRSprocessing file (Run<N>.root, with area_/voltages_ branches) sits
+    # directly under the data root — same dir as the flattened_Run<N>.root
+    # waveform files, no `processed/` subdir.
     if args.proc_root:
         proc_root = Path(args.proc_root)
+    elif settings.data_root is not None:
+        proc_root = Path(settings.data_root) / f"Run{run_num}.root"
     else:
-        proc_root = (PROJECT_ROOT.parent.parent.parent
-                     / "data_processing" / "drsProcessing"
-                     / "processed" / f"Run{run_num}.root")
+        proc_root = PROJECT_ROOT.parent.parent.parent / "data" / f"Run{run_num}.root"
     if not proc_root.exists():
         raise SystemExit(
             f"DRSprocessing ROOT not found: {proc_root}\n"
-            f"Pass --proc-root <path> if it lives elsewhere.")
+            f"Pass --proc-root <path>, or --data-root <dir> holding "
+            f"Run{run_num}.root.")
 
     # Cosine cutoff: explicit flag > dataset preset > 50 MHz (legacy fallback).
     # Bug-fix 8 (2026-05-30 scan): previously this branch used the dataset
