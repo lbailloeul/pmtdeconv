@@ -62,7 +62,10 @@ def run(args: argparse.Namespace) -> int:
 
     # Templates
     template_csv = settings.template_csv
-    templates = load_template(template_csv)
+    # strict=False: warn + fall back to FALLBACK_TEMPLATE when the configured
+    # template CSV is absent (e.g. a fresh clone with no built Cd109 template),
+    # matching the hits/tune paths instead of hard-crashing.
+    templates = load_template(template_csv, strict=False)
     # Always provide a fallback so unknown branches still get a kernel
     templates.setdefault("_default", FALLBACK_TEMPLATE)
 
@@ -100,9 +103,10 @@ def run(args: argparse.Namespace) -> int:
                 continue
             root_path = candidates[0]
         else:
-            root_path = Path(data_dir) / f"flattened_Run{run_num}.root"
-            if not root_path.exists():
-                print(f"[skip] {root_path} not found")
+            from pmtdeconv.io.data_paths import resolve_run_file
+            root_path = resolve_run_file(data_dir, run_num, kind="flat")
+            if root_path is None:
+                print(f"[skip] run {run_num}: no flattened file under {data_dir}")
                 continue
         inputs_meta.append({"role": "root_data", "path": str(root_path)})
         print(f"══ Run {run_num} ══")
@@ -168,6 +172,12 @@ def run(args: argparse.Namespace) -> int:
                 dataset=dataset_label)
         outputs_meta.append({"role": "marginal_pdf",
                              "path": str(out_dir / f"deconv_{args.metric}_1d_run{run_num}.pdf")})
+
+    # Fail loudly if a flat run was requested but no file was found anywhere
+    # (rather than writing an empty CSV that silently breaks downstream steps).
+    if not is_object_format and runs and not stats["runs"]:
+        from pmtdeconv.io.data_paths import not_found_message
+        raise SystemExit(not_found_message(data_dir, runs[0], kind="flat"))
 
     # Manifest
     manifest_path = (Path(settings.manifest_path)

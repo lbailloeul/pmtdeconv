@@ -50,20 +50,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     # when not supplied (DRSprocessing's default).
 
 
-def _resolve_root_path(args, run_num: int, settings) -> Path:
-    """Resolve the DRSprocessing ROOT for a given run.
-
-    Precedence: ``--root`` flag > ``<data-root>/Run<N>.root`` > legacy
-    default. The DRSprocessing file sits **directly** under the data root —
-    no ``processed/`` subdir is required (point ``--data-root`` at whatever
-    directory holds it, or pass ``--root`` for an arbitrary path).
-    """
-    if args.root:
-        return Path(args.root)
-    if settings.data_root is not None:
-        return Path(settings.data_root) / f"Run{run_num}.root"
-    # Legacy default when neither --root nor --data-root is given.
-    return PROJECT_ROOT.parent.parent.parent / "data" / f"Run{run_num}.root"
+# Per-run DRSprocessing file resolution — layout search (processed/, root,
+# one-level subdirs, *Run<N>*.root glob) + the actionable not-found error —
+# lives in pmtdeconv.io.data_paths.resolve_runs (kind="drs"); see run().
 
 
 def run(args: argparse.Namespace) -> int:
@@ -114,11 +103,11 @@ def run(args: argparse.Namespace) -> int:
     # DRSprocessing). Default to "Events" for `raw_area drs` specifically.
     tree_name = settings.tree if settings.tree not in (None, "", "waveforms") else "Events"
 
-    for run_num in runs:
-        root_path = _resolve_root_path(args, run_num, settings)
-        if not root_path.exists():
-            print(f"[skip] {root_path} not found")
-            continue
+    from pmtdeconv.io.data_paths import resolve_runs
+    data_root = (Path(settings.data_root) if settings.data_root
+                 else PROJECT_ROOT.parent.parent.parent / "data")
+    for run_num, root_path in resolve_runs(data_root, runs, kind="drs",
+                                           explicit=args.root):
         inputs_meta.append({"role": "root_data", "path": str(root_path)})
 
         with uproot.open(root_path) as ufile:

@@ -153,6 +153,18 @@ def _run_na22_timewalk(args: argparse.Namespace) -> int:
 
     area_csv = area_dir / f"area_{args.raw_source}_run{run_number}.csv"
     pulse_csv = hits_dir / "deconv_pulse.csv"
+    # Belt-and-suspenders: the raw-area step now raises (with actionable
+    # guidance) when its input is missing, so we normally abort before here.
+    # But guard against a raw-area step that ran yet produced no CSV, so the
+    # recipe stops with a clear message instead of cascading into the
+    # downstream "Could not resolve --area-csv".
+    if not getattr(args, "dry_run", False) and not area_csv.exists():
+        raise SystemExit(
+            f"raw-area ({args.raw_source}) produced no output for run "
+            f"{run_number} (expected {area_csv}).\n"
+            f"  The raw-area step likely couldn't find its input file — see the "
+            f"error above, or point at your data with --data-root <dir> "
+            f"(or $PMTDECONV_DATA_ROOT).")
     _execute(
         "timewalk",
         [

@@ -115,9 +115,10 @@ def run(args: argparse.Namespace) -> int:
                 continue
             root_path = candidates[0]
         else:
-            root_path = data_dir / f"flattened_Run{run_num}.root"
-            if not root_path.exists():
-                print(f"[skip] {root_path} not found")
+            from pmtdeconv.io.data_paths import resolve_run_file
+            root_path = resolve_run_file(data_dir, run_num, kind="flat")
+            if root_path is None:
+                print(f"[skip] run {run_num}: no flattened file under {data_dir}")
                 continue
         inputs_meta.append({"role": "root_data", "path": str(root_path)})
 

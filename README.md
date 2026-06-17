@@ -8,8 +8,7 @@ lanl_806, lanl_835, lanl_movedBar.
 
 **The single deployable entry point is `pmtdeconv`** — a unified CLI organized
 around output granularity (`hits` vs `area`) plus supporting template,
-area-source, plotting, timewalk, info, and tune commands. Pre-CLI analysis
-scripts have been moved to `legacy/` (gitignored) and are no longer maintained.
+area-source, plotting, timewalk, info, and tune commands.
 
 ## Project structure
 
@@ -39,19 +38,12 @@ bailloeulScripts/
 │   └── test_vetoes.py
 │
 ├── outputs/                    # CLI outputs (gitignored)
-├── legacy/                     # Pre-CLI scripts + the originals of the
-│                                 6 modules that got lifted into pmtdeconv/
-│                                 (utils.py, aggregate_spe_templates.py,
-│                                 build_spe_templates_perfile.py,
-│                                 timewalk_data_gif.py, deconv_area_Na22.py,
-│                                 analyze_deconv.py). Gitignored.
-│
-├── CLAUDE.md, README.md
+├── README.md
 └── .gitignore
 ```
 
-The top-level has just **4 visible entries** (`pmtdeconv/`, `tests/`,
-`CLAUDE.md`, `README.md`) plus two gitignored dirs. `pmtdeconv/` is
+The top-level has just **3 visible entries** (`pmtdeconv/`, `tests/`,
+`README.md`) plus the gitignored `outputs/`. `pmtdeconv/` is
 **self-contained** — it imports nothing from sibling directories, only from
 within its own tree and from the scientific Python stack (numpy, scipy, pandas,
 matplotlib, uproot, awkward, PyWavelets), which `pip install -e .` pulls in
@@ -61,17 +53,56 @@ automatically (see [Install](#install)).
 
 `pmtdeconv` needs the scientific Python stack (numpy, scipy, pandas, matplotlib,
 uproot, awkward, PyWavelets). **One editable install pulls all of them in** —
-you do not pip-install them one by one:
+you do not pip-install them one by one.
+
+Work in a fresh environment to avoid clashes — create and activate one first
+(pick conda **or** venv):
 
 ```bash
-cd bailloeulScripts            # the dir containing pyproject.toml
-pip install -e .               # runtime deps; or `pip install -e .[dev]` for pytest too
+# --- conda ---
+conda create -n pmtdeconv python=3.11 -y
+conda activate pmtdeconv
+
+# --- or venv (stdlib) ---
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 ```
 
-Use a fresh environment (conda/venv) to avoid clashes. After this,
-`python -m pmtdeconv --help` (and the `pmtdeconv` console script) work from
-anywhere. If you see `ModuleNotFoundError: No module named 'uproot'` (or scipy,
-pandas, …), you ran from source without installing — run the command above.
+Then install:
+
+```bash
+cd bailloeulScripts                # the dir containing pyproject.toml
+pip install -e .                   # runtime deps (numpy/scipy/uproot/PyWavelets/…)
+# to also run the test suite:
+pip install -e ".[dev]"            # + pytest, pytest-cov
+```
+
+After this, `python -m pmtdeconv --help` (and the `pmtdeconv` console script)
+work from anywhere. If you see `ModuleNotFoundError: No module named 'uproot'`
+(or scipy, pandas, PyWavelets, …), you ran from source without installing — run
+the editable install above.
+
+### Running the tests
+
+```bash
+pip install -e ".[dev]"            # once, for pytest
+python -m pytest tests/ -q
+```
+
+The byte-identical **golden** tests and the **polarity** tests need synthetic
+ROOT fixtures that are *not* committed (they are regenerated, not stored). Build
+them once — no real data required:
+
+```bash
+python tests/fixtures/make_synth_root.py          # flat waveforms
+python tests/fixtures/make_synth_object_root.py    # LANL object format
+python tests/fixtures/make_synth_drs_root.py       # DRSprocessing area tree
+python tests/fixtures/make_synth_offline_root.py   # LANL offline pulse list
+```
+
+Without them those tests **skip** (each prints which script to run); the rest of
+the suite still passes. No fixture or external data is needed for the math,
+CLI-wiring, or tune smoke tests.
 
 ### Pointing at your data
 
@@ -89,6 +120,24 @@ python -m pmtdeconv hits --dataset na22 --runs 65213 --data-root /path/to/run/fi
 run. (`--data-root` overrides the *per-dataset* directory directly, which is the
 simplest option when your files are not laid out as `<root>/Na22_lab/…`.)
 
+**Per-run file layout is flexible.** Within the data root, each run's ROOT file
+is located by searching the common layouts, so you do not have to match one
+exact path:
+
+- flattened waveforms (`hits`, `area`, `raw-area mqana`): `flattened_Run<N>.root`
+  directly under the data root or one level down in a subdirectory.
+- DRSprocessing area files (`raw-area drs`): `<root>/processed/Run<N>.root`,
+  `<root>/Run<N>.root`, the same one level down, or any `*Run<N>*.root` match.
+- You can always pin an exact file with `--root` / `--area-root` (it wins over
+  the search).
+
+If a requested run's file is found nowhere, the command **stops with an error**
+that lists every path it searched and the three ways to fix it (`--data-root`,
+`PMTDECONV_DATA_ROOT`, `--root`/`--area-root`) — instead of silently producing
+empty output. The `run` recipes forward `--data-root` to every step, so a single
+`--data-root` (or `PMTDECONV_DATA_ROOT`) covers the whole workflow and a missing
+input fails fast at the step that needs it.
+
 ## Quick start
 
 ```bash
@@ -105,12 +154,12 @@ python -m pmtdeconv <command> --help             # command flag reference
 python -m pmtdeconv run na22-timewalk
 python -m pmtdeconv results list
 
-# Tune the denoiser to your detector (PR 10):
+# Tune the denoiser to your detector:
 python -m pmtdeconv tune wavelet --dataset na22 --write-presets
 python -m pmtdeconv hits --dataset na22 --runs 65213 \
     --preset na22-wavelet-tuned-2026-05-29-level3
 
-# Debug an individual event (PR 10 diagnostic flag):
+# Debug an individual event (diagnostic flag):
 python -m pmtdeconv hits --dataset na22 --runs 65213 \
     --diagnostic-events 5 10 100
 ```
@@ -175,14 +224,11 @@ LANL/data/Na22_lab/
 
 ## Using `pmtdeconv` (unified CLI)
 
-The legacy per-stage scripts are consolidated behind a single
-`pmtdeconv` CLI with git-style subcommands. The math is unchanged —
-each subcommand calls the canonical `pmtdeconv/pipeline/` functions,
-and the legacy scripts re-export the same names so existing invocations
-keep working. Every command drops a `manifest.json` recording the
-resolved settings, provenance, inputs/outputs, git SHA, and library
-versions. Byte-identical regression is guarded by deterministic
-synthetic-ROOT fixtures (3 flat + 3 object + 2 offline = 8 goldens).
+`pmtdeconv` is a single CLI with git-style subcommands; each subcommand calls
+the canonical `pmtdeconv/pipeline/` functions. Every command drops a
+`manifest.json` recording the resolved settings, provenance, inputs/outputs,
+git SHA, and library versions. Byte-identical regression is guarded by
+deterministic synthetic-ROOT fixtures (3 flat + 3 object + 2 offline = 8 goldens).
 
 ### Subcommand tree
 
@@ -198,11 +244,8 @@ pmtdeconv
 ├── info     {datasets, presets, template, offline-file, artifacts}
 ├── config   {show, resolve}                     configuration inspection
 ├── results  {list, show, path}                  output discovery
-└── tune     {cosine, wavelet, stft}            regime-driven parameter sweeps (PR 10)
+└── tune     {cosine, wavelet, stft}            regime-driven parameter sweeps
 ```
-
-The older `pulse`, `waveform`, and `raw_area` spellings remain available as
-deprecated aliases for existing scripts.
 
 `tune` runs deterministic sweeps against the seeded
 synthetic regime fixtures (`level1`..`level5`, from low SNR to
@@ -253,17 +296,16 @@ python -m pmtdeconv <command> --help     # command flag reference
 ```bash
 python -m pmtdeconv run na22-timewalk
 
-# Equivalent low-level commands remain available:
+# Or run the individual steps:
 python -m pmtdeconv raw-area drs --dataset na22 --runs 65213
 python -m pmtdeconv hits --dataset na22 --runs 65213 --preset na22-timewalk
 python -m pmtdeconv timewalk run --dataset na22 --runs 65213 \
     --preset na22-timewalk
 ```
 
-The preset baked in the settings that produced σ ≈ 1.33 ns at the
+The preset bakes in the settings that produced σ ≈ 1.33 ns at the
 [170, 175] nVs CH2 band (vs ELOG ~1.56 ns) and a 7.74 ns walk length
-(vs 13.4 ns raw `t_half`). See
-`.claude/plans/iterative-chasing-sunbeam.md` for the rationale.
+(vs 13.4 ns raw `t_half`).
 
 ### Worked example 2 — LANL pulse-list workflow (offline format)
 
@@ -310,7 +352,7 @@ python -m pmtdeconv hits --dataset na22 --runs 65213 --dry-run
 The `manifest.json` from a dry-run is enough to confirm the resolved
 settings before committing to a multi-minute run.
 
-### Worked example 5 — regime-driven parameter sweeps (PR 10)
+### Worked example 5 — regime-driven parameter sweeps
 
 `tune` builds seeded synthetic fixtures (`tests/fixtures/regime/level<N>/`)
 at the dataset's `dt_ns`, runs the pipeline at each candidate config,
@@ -432,7 +474,7 @@ outputs/
 │     ├── timewalk_summary_run<RUN>.csv       MQAna timewalk schema
 │     ├── timewalk_curve_run<RUN>.png
 │     └── manifest.json
-└── tune_{cosine,wavelet,stft}_<dataset>[…]/    (PR 10)
+└── tune_{cosine,wavelet,stft}_<dataset>[…]/
       ├── recipe.json                         per-regime winner + metrics
       ├── sweep_summary.csv                   every (regime, config) row
       ├── sweep_curves_level<N>.png           scatter/drift/efficiency vs axis

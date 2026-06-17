@@ -196,7 +196,11 @@ def run(args: argparse.Namespace) -> int:
         process_run, FALLBACK_TEMPLATE,
     )
 
-    templates = load_template(settings.template_csv)
+    # strict=False: warn + fall back to FALLBACK_TEMPLATE when the configured
+    # template CSV is absent (e.g. a fresh clone with no built Cd109 template),
+    # mirroring the hits/area paths — a missing template should not hard-crash a
+    # synthetic-regime sweep.
+    templates = load_template(settings.template_csv, strict=False)
     templates.setdefault("_default", FALLBACK_TEMPLATE)
 
     weights = ScoringWeights()

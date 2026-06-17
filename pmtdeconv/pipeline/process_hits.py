@@ -190,10 +190,10 @@ def process_run(args, diagnostic_sink=None):
     print(f"Output: {out_dir}")
 
     def _events():
-        for run in args.runs:
-            root_path = str(data_dir / f"flattened_Run{run}.root")
+        from pmtdeconv.io.data_paths import resolve_runs
+        for run, root_path in resolve_runs(data_dir, args.runs, kind="flat"):
             yield from iter_flat_run(
-                root_path, run, dt_ns=dt_ns, polarity=polarity,
+                str(root_path), run, dt_ns=dt_ns, polarity=polarity,
                 branches=None, entry_start=0, entry_stop=entry_stop,
                 step_size=step_size,
             )
@@ -266,10 +266,10 @@ def process_run_stft(args, diagnostic_sink=None):
     print(f"Output: {out_dir}")
 
     def _events():
-        for run in args.runs:
-            root_path = str(data_dir / f"flattened_Run{run}.root")
+        from pmtdeconv.io.data_paths import resolve_runs
+        for run, root_path in resolve_runs(data_dir, args.runs, kind="flat"):
             yield from iter_flat_run(
-                root_path, run, dt_ns=dt_ns, polarity=polarity,
+                str(root_path), run, dt_ns=dt_ns, polarity=polarity,
                 branches=None, entry_start=0, entry_stop=entry_stop,
                 step_size=step_size,
             )
