@@ -143,15 +143,26 @@ input fails fast at the step that needs it.
 ```bash
 # 0. Install first (see above): cd bailloeulScripts && pip install -e .
 
-# Discover the CLI surface:
+# 1. Point at your data (dir holding flattened_Run*.root etc.):
+export PMTDECONV_DATA_ROOT=/path/to/your/data    # or pass --data-root on each command
+python -m pmtdeconv info datasets                # confirms the resolved paths exist
+
+# 2. Discover the CLI surface:
 python -m pmtdeconv --help                       # command tree
-python -m pmtdeconv info datasets                # 6 dataset presets
 python -m pmtdeconv config show na22-timewalk    # inspect a recipe
-python -m pmtdeconv config resolve --preset na22-timewalk
 python -m pmtdeconv <command> --help             # command flag reference
 
-# Run the canonical Na22 timewalk workflow:
-python -m pmtdeconv run na22-timewalk
+# 3. (Optional) Build the SPE template — needs Cd109 data. Without it, deconv
+#    falls back to a generic kernel (with a warning); for real charge scale:
+python -m pmtdeconv template build --dataset cd109   # → outputs/spe_templates_perfile/spe_templates_perfile.csv
+python -m pmtdeconv template aggregate               # → outputs/spe_templates_perfile/spe_templates_perchannel.csv
+#    The Na22 preset's default template lives elsewhere, so to USE the one you
+#    just built, pass it explicitly: --template outputs/spe_templates_perfile/spe_templates_perchannel.csv
+
+# 4. Run the canonical Na22 timewalk workflow.
+#    Flat Na22 data is flattened_Run*.root only (no DRSprocessing Run<N>.root),
+#    so use the mqana raw-area source — the default `drs` needs those files:
+python -m pmtdeconv run na22-timewalk --raw-source mqana
 python -m pmtdeconv results list
 
 # Tune the denoiser to your detector:
