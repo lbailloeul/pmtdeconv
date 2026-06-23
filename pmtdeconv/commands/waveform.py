@@ -153,7 +153,12 @@ def run(args: argparse.Namespace) -> int:
         # `df[df.interval >= 0]`).
         suffix = settings.out_suffix or ""
         csv_path = out_dir / f"areas_run{run_num}{suffix}.csv"
-        df_passed = df[df["interval"] >= 0][list(AREA_COLUMNS)]
+        # Deconv-area output = the raw-area schema + the per-waveform `saturated`
+        # data-quality flag (plateau-detected). Kept off the shared AREA_COLUMNS
+        # so raw-area mqana/drs are unaffected.
+        cols = list(AREA_COLUMNS) + (
+            ["saturated"] if "saturated" in df.columns else [])
+        df_passed = df[df["interval"] >= 0][cols]
         df_passed.to_csv(csv_path, index=False)
         outputs_meta.append({"role": "area_csv", "path": str(csv_path)})
         stats["runs"].append(run_num)

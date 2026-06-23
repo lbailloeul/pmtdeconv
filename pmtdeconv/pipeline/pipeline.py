@@ -180,12 +180,15 @@ def run_area(events: Iterable[AreaEvent], *, dt_ns: float,
     do_denoise = bool(wavelet) and str(wavelet).lower() not in {"none", "off", "no"}
 
     for run, cycle, entry_i, branch, wave, N in events:
-        row_base = {"run": run, "cycle": cycle, "entry": entry_i, "branch": branch}
+        # Saturation is a data-quality FLAG (plateau-detected; no rail
+        # threshold), carried on every row. Saturated events are KEPT and
+        # integrated normally — charge is flagged, not discarded (cut
+        # downstream via the flag).
+        noise0 = float(np.nanstd(wave[:100])) or 1.0
+        is_sat, _run = detect_saturation_plateau(wave, noise0)
+        row_base = {"run": run, "cycle": cycle, "entry": entry_i,
+                    "branch": branch, "saturated": bool(is_sat)}
 
-        if area.sat_thresh > 0 and wave.max() > area.sat_thresh:
-            rows.append({**row_base, "area": np.nan, "peak_height": np.nan,
-                         "reason": "saturated"})
-            continue
         if wave.max() < area.no_trigger_amp:
             rows.append({**row_base, "area": np.nan, "peak_height": np.nan,
                          "reason": "no_trigger"})
