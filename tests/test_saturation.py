@@ -1,25 +1,22 @@
 #!/usr/bin/env python3
-"""Saturation-gate behavior — the contract S5 (saturation-as-flag) will flip.
+"""Saturation = a data-quality FLAG, detected by the flat clipped-top plateau.
 
-TODAY the saturation gate fires unconditionally (pipeline.py: `wave.max() >=
-sat_threshold` -> success=False, reason="saturated"), even under --no-vetoes.
-This test LOCKS that current behavior so the S5 rework is a deliberate, visible
-change rather than a silent one.
+S5 replaced the fixed ``wave.max() >= sat_thresh`` gate (which needed each
+detector's rail and DROPPED the event) with a universal plateau detector
+(``core.dsp.detect_saturation_plateau``: a run of >=K samples within a sub-noise
+epsilon of vmax). Saturated events are now KEPT and carry ``saturated=True``,
+their timing recovered; only charge is unreliable (cut downstream via the flag).
 
-When S5 lands (saturation becomes a data-quality FLAG, not a drop), flip the
-assertions here to: saturated events are KEPT (success=True), carry
-``saturated=True``, and still produce a finite ``t_peak`` (timing recovered).
+Two test layers:
+- unit tests of the detector (synthetic arrays — no fixtures);
+- an end-to-end contract test that level5's clipped events are kept + flagged at
+  DEFAULT (no --sat-thresh).
 
-NOTE: the level5 fixture clips at 950 mV but na22's default sat_thresh is 960,
-so the gate does NOT fire at the default — we pass ``--sat-thresh 900`` so the
-clipped/bright events actually reach the threshold.
-
-S5 will replace the fixed threshold with a flat-PLATEAU detector (saturation =
->=K consecutive samples within a sub-noise epsilon of vmax). Validated on the
-regimes (2026-06): plateau ε=0.25σ, K=4 matches the correctly-set threshold
-(23 TP / 1 FP / 0 FN on level5) with NO rail knowledge, and gives 0 false
-positives on bright-but-unclipped level4 — because clipped runs are 25-41
-samples flat to <0.5 mV while the flattest unclipped top is <=3 samples.
+Detector parameters (validated on real na22 Run 65213, hard 950 mV clip):
+ε = 0.5σ, K = 10. K=10 sits between the worst rounded-peak false positive (the
+legacy bare-Gaussian fixture, 7-sample near-max run) and real clips (level5
+25-41 samples; na22 150+), so it rejects broad unclipped tops AND catches every
+real clip — with zero rail knowledge.
 """
 from __future__ import annotations
 
@@ -118,22 +115,23 @@ def _run(out_dir: Path, *args: str) -> None:
             f"{res.stdout}\n{res.stderr}")
 
 
-def test_saturation_gate_currently_drops_events(level5_root, tmp_path):
-    """CURRENT behavior: events reaching sat_thresh are dropped with
-    reason='saturated' — even under --no-vetoes. (S5 flips this.)"""
+def test_saturation_kept_and_flagged(level5_root, tmp_path):
+    """S5 contract: clipped events are KEPT and FLAGGED, detected by the plateau
+    at DEFAULT (no --sat-thresh, no rail knowledge), with timing recovered —
+    never dropped."""
     _run(tmp_path / "h", "hits", "--dataset", "na22",
-         "--data-root", str(level5_root), "--runs", "0",
-         "--sat-thresh", "900", "--no-vetoes")
+         "--data-root", str(level5_root), "--runs", "0", "--no-vetoes")
     df = pd.read_csv(tmp_path / "h" / "all_results.csv")
-    assert "reason" in df.columns
-    n_sat = int((df["reason"] == "saturated").sum())
-    assert n_sat > 0, (
-        "expected some events to hit the saturation gate at --sat-thresh 900; "
-        f"reason counts: {df['reason'].value_counts().to_dict()}")
-    # And today those saturated rows are NOT successes.
-    sat_rows = df[df["reason"] == "saturated"]
-    assert not sat_rows["success"].any(), \
-        "saturated rows should currently be failures (pre-S5)"
+    assert "saturated" in df.columns
+    sat = df[df["saturated"] == True]  # noqa: E712
+    # plateau flags level5's clipped events with no threshold supplied
+    assert len(sat) > 0, "plateau should flag level5's clipped events at default"
+    # saturation is no longer a DROP reason
+    assert "saturated" not in set(df["reason"].dropna().astype(str))
+    # kept (success) with recovered timing — saturation is a charge defect only
+    sat_ok = sat[sat["success"] == True]  # noqa: E712
+    assert len(sat_ok) > 0
+    assert sat_ok["t_peak"].notna().any()
 
 
 if __name__ == "__main__":

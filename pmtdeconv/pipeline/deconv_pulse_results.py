@@ -8,6 +8,7 @@ from typing import Iterable, Mapping, Optional
 import pandas as pd
 
 from pmtdeconv.io.deconv_pulse import write_deconv_pulse_csv
+from pmtdeconv.io.schemas import HIT_RESULTS_COLUMNS
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,11 @@ def write_deconv_pulse_result_tables(
     """
     out_dir = Path(out_dir)
     df = pd.DataFrame(results)
+    # Enforce the canonical column order (schema is the single source of truth).
+    # Failure rows that lack peak columns get NaN; this also lands the trailing
+    # `saturated` flag consistently regardless of row-dict insertion order.
+    if len(df):
+        df = df.reindex(columns=list(HIT_RESULTS_COLUMNS))
     df_good = (
         df[df["success"]]
         if len(df) and "success" in df.columns else pd.DataFrame()

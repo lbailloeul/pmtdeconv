@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 
+from pmtdeconv.core.dsp import detect_saturation_plateau
 from pmtdeconv.pipeline.template import FALLBACK_TEMPLATE
 from pmtdeconv.presets.veto_profiles import VETO_PROFILES
 from pmtdeconv.utils import (
@@ -332,9 +333,17 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
     row_id = {"run": rec.run, "cycle": rec.cycle, "det": rec.det,
               "chan": rec.chan, "branch": branch, "entry": entry_i}
 
-    if np.max(wave) >= sat_threshold:
-        rows.append({**row_id, "success": False, "reason": "saturated"})
-        return rows
+    # Saturation is a DATA-QUALITY FLAG, not a veto. Detect the clipped-top
+    # plateau (universal — no per-detector rail threshold) and carry
+    # ``saturated`` on every row. Saturated events are KEPT and fully processed:
+    # their edge timing is recovered (validated robust to clipping); only their
+    # charge is unreliable, and is cut downstream via the flag (e.g.
+    # ``plot energy --exclude-saturated``). This replaces the old
+    # ``wave.max() >= sat_threshold`` drop, which both needed each detector's
+    # rail AND silently discarded usable timing.
+    noise0 = float(np.nanstd(wave[:100])) or 1.0
+    is_sat, _run = detect_saturation_plateau(wave, noise0)
+    row_id["saturated"] = bool(is_sat)
 
     if np.max(wave) < profile.no_trigger_amp and not no_vetoes:
         rows.append({**row_id, "success": False, "reason": "no_trigger"})

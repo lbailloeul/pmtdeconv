@@ -174,7 +174,7 @@ def _longest_true_run(mask: np.ndarray) -> int:
 
 
 def detect_saturation_plateau(wave, noise_sigma, *,
-                              k_samples: int = 4,
+                              k_samples: int = 10,
                               eps_sigma_frac: float = 0.5):
     """Detect ADC saturation by its flat-plateau signature — universal, no rail.
 
@@ -192,11 +192,18 @@ def detect_saturation_plateau(wave, noise_sigma, *,
     The tolerance is deliberately SUB-NOISE (``eps_sigma_frac`` < 1): a hard
     digital clip yields identical samples (flatter than the noise floor), so a
     fraction of σ separates it from a rounded, noisy peak. ``eps ≈ σ`` over-flags
-    broad unclipped tops; ``eps ≈ 0.25-0.5σ`` does not. Validated on real na22
-    Run 65213 (rail = hard 950 mV clip): ε=0.5σ, k=4 reproduces the rail
-    threshold to ~1% with ~97% per-event overlap and ZERO rail knowledge, and
-    works for +ve / -ve / bipolar pulses once polarity-corrected (vmax = rail).
-    NaN samples (DRS dead cells) compare False and so conservatively break runs.
+    broad unclipped tops; ``eps ≈ 0.5σ`` does not.
+
+    ``k_samples`` defaults to 10 (~5 ns at na22 dt). Real saturation is a LONG
+    plateau: synthetic level5 clips run 25-41 samples, real na22 Run 65213 clips
+    run 150+. The worst rounded-peak false positive — the legacy bare-Gaussian
+    golden fixture (σ=25 samples, far broader than any real PMT pulse) — reaches
+    only a 7-sample near-max run, so k=10 leaves a comfortable margin on BOTH
+    sides (rejects ≤7, catches ≥25). Validated on real na22 Run 65213 (rail =
+    hard 950 mV clip): ε=0.5σ reproduces the rail threshold to ~1% with ~97%
+    per-event overlap and ZERO rail knowledge, and works for +ve / -ve / bipolar
+    pulses once polarity-corrected (vmax = rail). NaN samples (DRS dead cells)
+    compare False and so conservatively break runs.
     """
     w = np.asarray(wave, dtype=float)
     finite = w[np.isfinite(w)]

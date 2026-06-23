@@ -63,6 +63,10 @@ HIT_RESULTS_COLUMNS: Tuple[str, ...] = (
     "baseline_ped", "baseline_sig",
     "baseline_t0", "baseline_t1",
     "u_rec_noise",
+    # S5: per-waveform data-quality flag (plateau-detected ADC clipping).
+    # Saturated events are kept + flagged (timing recovered, charge unreliable);
+    # appended at the END so this is a no-version-bump schema change.
+    "saturated",
 )
 
 HIT_RESULTS_SCHEMA = CsvSchema(
