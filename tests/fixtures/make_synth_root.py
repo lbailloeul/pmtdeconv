@@ -40,7 +40,7 @@ import pandas as pd
 import uproot
 
 from regimes import (BOX_WIDTH_SAMP, PEDESTAL_MV, SIGMA_SAMP, get_regime,
-                     list_regimes, make_waveforms)
+                     list_regimes, make_waveforms, make_waveforms_pileup)
 
 
 N_EVENTS = 100
@@ -157,6 +157,26 @@ def main(regime: Optional[str] = None,
     out_dir = fixtures_dir / "regime" / regime
     out_path = out_dir / "flattened_Run0.root"
     rng = np.random.default_rng(SEED)
+
+    # Pile-up regime (n_pulses > 1): multi-pulse waveforms + per-pulse truth.
+    if reg.n_pulses > 1:
+        w1, w2, truth_rows = make_waveforms_pileup(
+            rng, n_events, N_SAMPLES, dt_ns, reg)
+        _write_root(out_path, w1, w2)
+        print(f"wrote {out_path}  ({n_events} events, "
+              f"{N_SAMPLES} samples, seed={SEED}, regime={regime})")
+        print(f"  dt_ns={dt_ns}  amp range: U({reg.amp_ch1_lo}, "
+              f"{reg.amp_ch1_hi}) mV  noise σ={reg.noise_sigma_mv} mV  "
+              f"pile-up: ≤{reg.n_pulses} pulses, sep U({reg.sep_lo_ns}, "
+              f"{reg.sep_hi_ns}) ns")
+        if write_truth:
+            truth_path = out_dir / "flattened_Run0.truth.csv"
+            pd.DataFrame(truth_rows).to_csv(truth_path, index=False)
+            (out_dir / ".dt_ns").write_text(f"{dt_ns}\n")
+            print(f"  truth CSV: {truth_path}  ({len(truth_rows)} pulse rows "
+                  f"across {n_events} events)")
+        return out_path
+
     (w1, w2, amps_ch1, amps_ch2, centers_ch1, centers_ch2,
      charges_ch1, charges_ch2) = make_waveforms(
         rng, n_events, N_SAMPLES, dt_ns, reg)

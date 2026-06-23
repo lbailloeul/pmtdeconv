@@ -59,13 +59,24 @@ def _spe_kernel(n_samp: int, dt_ns: float, branch: str) -> np.ndarray:
 
 @dataclass(frozen=True)
 class Regime:
-    """One (amp range, noise, clip) point in the regime grid."""
+    """One (amp range, noise, clip) point in the regime grid.
+
+    The optional pile-up fields (``n_pulses`` > 1) turn an event into a
+    burst of ``n_pulses`` overlapping ``box ⊛ SPE`` pulses separated by a
+    uniform ``U(sep_lo_ns, sep_hi_ns)`` gap — the only regime with
+    multi-pulse ground truth (one truth row per pulse). Single-pulse
+    regimes keep ``n_pulses = 1`` and the legacy one-row-per-(event,
+    branch) truth.
+    """
     name: str
     amp_ch1_lo: float    # mV — uniform lower bound
     amp_ch1_hi: float    # mV — uniform upper bound
     noise_sigma_mv: float
     clip_mv: Optional[float]   # None = no clipping
     description: str
+    n_pulses: int = 1          # >1 → pile-up (multi-pulse truth)
+    sep_lo_ns: float = 0.0     # min inter-pulse gap (pile-up only)
+    sep_hi_ns: float = 0.0     # max inter-pulse gap (pile-up only)
 
 
 REGIMES: Dict[str, Regime] = {
@@ -98,6 +109,23 @@ REGIMES: Dict[str, Regime] = {
         amp_ch1_lo=500.0, amp_ch1_hi=1100.0,
         noise_sigma_mv=2.0, clip_mv=950.0,
         description="saturated (clipped at 950 mV)",
+    ),
+    # ── realism regimes (S0): the denoiser + pile-up stress cases the
+    #    clean level1-5 grid never exercised. ──────────────────────────
+    "noisy": Regime(
+        name="noisy",
+        amp_ch1_lo=80.0, amp_ch1_hi=200.0,
+        noise_sigma_mv=12.0, clip_mv=None,
+        description="Na22-amplitude pulses at 10x noise — denoiser stress "
+                    "(SNR ~7-17, vs ~67-167 on level3)",
+    ),
+    "pileup": Regime(
+        name="pileup",
+        amp_ch1_lo=80.0, amp_ch1_hi=200.0,
+        noise_sigma_mv=1.2, clip_mv=None,
+        n_pulses=3, sep_lo_ns=5.0, sep_hi_ns=30.0,
+        description="2-3 overlapping pulses/event, 5-30 ns apart — "
+                    "multi-hit separation + per-pulse charge truth",
     ),
 }
 
@@ -181,3 +209,72 @@ def make_waveforms(rng: np.random.Generator,
         out_charges.append(charges)
     return (out[0], out[1], amps_ch1, amps_ch2,
             centers_ch1, centers_ch2, out_charges[0], out_charges[1])
+
+
+def make_waveforms_pileup(rng: np.random.Generator,
+                          n_evt: int, n_samp: int, dt_ns: float,
+                          regime: Regime,
+                          ) -> Tuple[np.ndarray, np.ndarray, List[dict]]:
+    """Build pile-up waveforms: ``n_pulses`` overlapping box⊛SPE pulses/event.
+
+    Each event injects ``U(2, regime.n_pulses)`` pulses on each channel,
+    consecutive pulses separated by ``U(sep_lo_ns, sep_hi_ns)``; CH2 mirrors
+    CH1 with a per-pulse timewalk offset and 0.4-0.8× amplitude. Charge is
+    linear in the convolution, so each pulse's truth charge is its OWN clean
+    integral regardless of overlap.
+
+    Returns ``(w1, w2, truth_rows)`` where ``truth_rows`` is a list of dicts
+    (one per pulse) carrying an extra ``pulse_id`` column on top of the
+    standard truth schema — the multi-pulse ground truth.
+    """
+    spe_by_branch = {b: _spe_kernel(n_samp, dt_ns, b)
+                     for b in ("d0_ch1", "d0_ch2")}
+    W = BOX_WIDTH_SAMP
+    box_width_ns = W * dt_ns
+    w1 = np.zeros((n_evt, n_samp), dtype=np.float64)
+    w2 = np.zeros((n_evt, n_samp), dtype=np.float64)
+    waves = {"d0_ch1": w1, "d0_ch2": w2}
+    truth_rows: List[dict] = []
+
+    for ev in range(n_evt):
+        npul = int(rng.integers(2, regime.n_pulses + 1))  # 2..n_pulses
+        c0 = rng.uniform(350.0, 450.0)
+        centers1 = [c0]
+        for _ in range(npul - 1):
+            sep_ns = rng.uniform(regime.sep_lo_ns, regime.sep_hi_ns)
+            centers1.append(centers1[-1] + sep_ns / dt_ns)
+        amps1 = rng.uniform(regime.amp_ch1_lo, regime.amp_ch1_hi, npul)
+        tw = rng.normal(2.0, 1.5, npul)
+        centers2 = [centers1[k] + tw[k] for k in range(npul)]
+        amps2 = amps1 * rng.uniform(0.4, 0.8, npul)
+
+        for branch, centers, amps in [("d0_ch1", centers1, amps1),
+                                      ("d0_ch2", centers2, amps2)]:
+            spe = spe_by_branch[branch]
+            total = np.zeros(n_samp, dtype=np.float64)
+            for pid in range(npul):
+                lo = int(round(centers[pid] - W / 2.0))
+                box = np.zeros(n_samp, dtype=np.float64)
+                box[max(lo, 0):min(lo + W, n_samp)] = 1.0
+                clean = np.convolve(box, spe)[:n_samp]
+                pk = clean.max()
+                if pk > 0:
+                    clean *= amps[pid] / pk
+                charge = float(clean.sum()) * dt_ns
+                total += clean
+                truth_rows.append({
+                    "event": ev, "branch": branch, "pulse_id": pid,
+                    "true_amp_mv": float(amps[pid]),
+                    "true_center_ns": float(centers[pid] * dt_ns),
+                    "true_charge_pVs": charge,
+                    "true_sigma_ns": float(box_width_ns),
+                    "saturated": bool(regime.clip_mv is not None
+                                      and amps[pid] > regime.clip_mv),
+                })
+            wave = (total + rng.normal(0.0, regime.noise_sigma_mv, n_samp)
+                    + PEDESTAL_MV)
+            if regime.clip_mv is not None:
+                np.minimum(wave, regime.clip_mv, out=wave)
+            waves[branch][ev] = wave
+
+    return w1.astype(np.float32), w2.astype(np.float32), truth_rows
