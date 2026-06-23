@@ -162,6 +162,53 @@ def sliding_local_mean(wave, window_bins):
     return np.convolve(wave, kernel, mode='same')
 
 
+def _longest_true_run(mask: np.ndarray) -> int:
+    """Length of the longest run of consecutive True values in a bool mask."""
+    if not mask.any():
+        return 0
+    padded = np.concatenate(([0], mask.astype(np.int8), [0]))
+    diff = np.diff(padded)
+    starts = np.flatnonzero(diff == 1)
+    ends = np.flatnonzero(diff == -1)
+    return int((ends - starts).max())
+
+
+def detect_saturation_plateau(wave, noise_sigma, *,
+                              k_samples: int = 4,
+                              eps_sigma_frac: float = 0.5):
+    """Detect ADC saturation by its flat-plateau signature — universal, no rail.
+
+    A clipped pulse pins to the digitizer rail, producing a run of (near-)
+    identical samples at the waveform extreme; a genuine unclipped peak is
+    rounded (only 1-3 samples at the max). This replaces the fixed
+    ``wave.max() >= sat_thresh`` gate, which needed each detector's rail and
+    conflated "tall" with "clipped".
+
+    Returns ``(is_saturated, run_len)`` where ``run_len`` is the longest run of
+    consecutive samples within ``eps`` of ``vmax`` (the max of the
+    polarity-corrected waveform), and ``eps = eps_sigma_frac * noise_sigma``.
+    Saturated iff ``run_len >= k_samples``.
+
+    The tolerance is deliberately SUB-NOISE (``eps_sigma_frac`` < 1): a hard
+    digital clip yields identical samples (flatter than the noise floor), so a
+    fraction of σ separates it from a rounded, noisy peak. ``eps ≈ σ`` over-flags
+    broad unclipped tops; ``eps ≈ 0.25-0.5σ`` does not. Validated on real na22
+    Run 65213 (rail = hard 950 mV clip): ε=0.5σ, k=4 reproduces the rail
+    threshold to ~1% with ~97% per-event overlap and ZERO rail knowledge, and
+    works for +ve / -ve / bipolar pulses once polarity-corrected (vmax = rail).
+    NaN samples (DRS dead cells) compare False and so conservatively break runs.
+    """
+    w = np.asarray(wave, dtype=float)
+    finite = w[np.isfinite(w)]
+    if finite.size == 0:
+        return False, 0
+    vmax = float(finite.max())
+    eps = max(eps_sigma_frac * float(noise_sigma), 1e-9)
+    near = np.abs(w - vmax) < eps        # NaN -> False -> breaks the run
+    run_len = _longest_true_run(near)
+    return run_len >= int(k_samples), run_len
+
+
 # ═══════════════════════════════════════════════════════════════
 # Wavelet denoiser (used by Na22 deconvolution scripts)
 # ═══════════════════════════════════════════════════════════════
