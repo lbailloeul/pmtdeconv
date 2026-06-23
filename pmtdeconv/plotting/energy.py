@@ -29,6 +29,7 @@ from pmtdeconv.utils import (                                       # noqa: E402
 # Step 6: the wavelet/STFT curves go through the SAME denoiser wrapper as
 # `hits` (pipeline.denoise.denoise), so the plot's "wavelet" curve is provably
 # the identical transform — no more divergent hardcoded module constants.
+from pmtdeconv.core.dsp import detect_saturation_plateau
 from pmtdeconv.pipeline.denoise import denoise
 from pmtdeconv.plotting.style import use_root_style, style_root_axes
 
@@ -121,6 +122,7 @@ def _qualifying_charge(u, raw, ped, noise, pad_bins: int, dt: float,
     return float(q), nkeep
 
 
+
 def _process_channel(d, kern, filt, c_lo, c_hi, pad_bins, dt, n_samp, dn):
     """``dn`` carries the denoiser knobs (wavelet + STFT) so the wavelet/STFT
     curves use the exact same ``pipeline.denoise.denoise`` transform as the
@@ -128,10 +130,15 @@ def _process_channel(d, kern, filt, c_lo, c_hi, pad_bins, dt, n_samp, dn):
     idx = np.where(d["mask"])[0]
     whole = {m: np.full(len(idx), np.nan) for m in METHODS}
     qual = {m: np.full(len(idx), np.nan) for m in METHODS}
+    sat = np.zeros(len(idx), dtype=bool)
     pre_n = int(100 / dt)
     for j, i in enumerate(idx):
         ped = d["base"][i]
         raw = d["v"][i].astype(np.float64)
+        # Plateau-detected saturation flag (universal; charge of clipped events
+        # is unreliable, so it can be isolated out of the energy histograms).
+        sig = float(np.nanstd(raw[:100])) or 1.0
+        sat[j] = bool(detect_saturation_plateau(raw, sig)[0])
         y = raw - ped
         u_fft = deconvolve_hits(y, kern, filt)
         u_stft = denoise(u_fft, denoiser="stft", dt_ns=dt,
@@ -148,7 +155,7 @@ def _process_channel(d, kern, filt, c_lo, c_hi, pad_bins, dt, n_samp, dn):
             noise = 1.4826 * np.median(np.abs(seg - np.median(seg)))
             qual[m][j], _ = _qualifying_charge(u, raw, ped, noise,
                                                pad_bins, dt, n_samp)
-    return idx, whole, qual
+    return idx, whole, qual, sat
 
 
 def render_energy_hist(
@@ -166,6 +173,7 @@ def render_energy_hist(
     cutoff_mhz: float = 50.0,
     nbins: int = 120,
     entry_stop: Optional[int] = None,
+    exclude_saturated: bool = False,
     # Step 6: denoiser knobs flow from Settings (default = the hits-pipeline
     # defaults) so the wavelet/STFT curves match `hits --denoiser <x>` exactly.
     wavelet: str = "sym8",
@@ -216,11 +224,12 @@ def render_energy_hist(
     for c in channels:
         n_evt = int(data[c]["mask"].sum())
         print(f"  deconvolving ch{c}: {n_evt} events …")
-        idx, whole, qual = _process_channel(
+        idx, whole, qual, sat = _process_channel(
             data[c], kern[c], filt, c_lo, c_hi, pad_bins, dt, n_samp, dn)
-        res[c] = (whole, qual)
+        res[c] = (whole, qual, sat)
         for j, i in enumerate(idx):
             rows.append(dict(channel=c, entry=int(i),
+                             saturated=bool(sat[j]),
                              **{f"whole_{m}": whole[m][j] for m in METHODS},
                              **{f"qual_{m}":  qual[m][j]  for m in METHODS}))
 
@@ -230,7 +239,15 @@ def render_energy_hist(
     fig, axes = plt.subplots(2, n_cols, figsize=(6.5 * n_cols, 9),
                               squeeze=False)
     for col, c in enumerate(channels):
-        whole, qual = res[c]
+        whole, qual, sat = res[c]
+        if exclude_saturated:
+            keep = ~sat
+            n_cut = int(sat.sum())
+            if n_cut:
+                print(f"  [sat] ch{c}: excluding {n_cut}/{len(sat)} "
+                      f"plateau-saturated events from the histogram")
+            whole = {m: whole[m][keep] for m in METHODS}
+            qual = {m: qual[m][keep] for m in METHODS}
         ref = whole["raw"][np.isfinite(whole["raw"]) & (whole["raw"] > 0)]
         hi = float(np.percentile(ref, 99.5)) if ref.size else 1.0
         edges = np.linspace(0, hi, nbins + 1)

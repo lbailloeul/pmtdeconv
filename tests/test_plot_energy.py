@@ -45,8 +45,8 @@ _DN = {"wavelet": "sym8", "wlevel": 5, "wmode": "hard", "wthresh_k": 1.0,
 def test_wavelet_curve_is_the_denoise_wrapper():
     d, kern, filt = _synthetic_channel()
     c_lo, c_hi = int(20 / DT), N - int(20 / DT)
-    idx, whole, qual = _process_channel(d, kern, filt, c_lo, c_hi,
-                                        int(50 / DT), DT, N, _DN)
+    idx, whole, qual, _ = _process_channel(d, kern, filt, c_lo, c_hi,
+                                           int(50 / DT), DT, N, _DN)
     # independently recompute event 0's wavelet whole-charge via the wrapper
     y0 = d["v"][0].astype(np.float64) - d["base"][0]
     u_fft0 = deconvolve_hits(y0, kern, filt)
@@ -58,8 +58,8 @@ def test_wavelet_curve_is_the_denoise_wrapper():
 def test_stft_curve_uses_threaded_knobs():
     d, kern, filt = _synthetic_channel()
     c_lo, c_hi = int(20 / DT), N - int(20 / DT)
-    _, whole, _ = _process_channel(d, kern, filt, c_lo, c_hi,
-                                   int(50 / DT), DT, N, _DN)
+    _, whole, _, _ = _process_channel(d, kern, filt, c_lo, c_hi,
+                                      int(50 / DT), DT, N, _DN)
     y0 = d["v"][0].astype(np.float64) - d["base"][0]
     u_fft0 = deconvolve_hits(y0, kern, filt)
     u_stft0 = denoise(u_fft0, denoiser="stft", dt_ns=DT, stft_nperseg_ns=20.0,
@@ -73,12 +73,12 @@ def test_threaded_stft_differs_from_old_hardcoded():
     # bug (the plot's STFT no longer secretly diverges from `hits --denoiser stft`).
     d, kern, filt = _synthetic_channel()
     c_lo, c_hi = int(20 / DT), N - int(20 / DT)
-    _, whole_new, _ = _process_channel(d, kern, filt, c_lo, c_hi, int(50 / DT),
-                                       DT, N, _DN)
+    _, whole_new, _, _ = _process_channel(d, kern, filt, c_lo, c_hi, int(50 / DT),
+                                          DT, N, _DN)
     dn_old = {**_DN, "stft_nperseg_ns": 24.0, "stft_freq_cutoff_mhz": 80.0,
               "stft_amp_threshold": 3.0}
-    _, whole_old, _ = _process_channel(d, kern, filt, c_lo, c_hi, int(50 / DT),
-                                       DT, N, dn_old)
+    _, whole_old, _, _ = _process_channel(d, kern, filt, c_lo, c_hi, int(50 / DT),
+                                          DT, N, dn_old)
     assert not np.allclose(whole_new["stft"], whole_old["stft"])
 
 

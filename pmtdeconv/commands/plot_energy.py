@@ -35,6 +35,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--board", type=int, default=2984,
                    help="Board prefix for DRSprocessing branches (default 2984).")
     g.add_argument("--channels", type=int, nargs="+", default=(1, 2))
+    g.add_argument("--exclude-saturated", action="store_true",
+                   help="Exclude plateau-detected saturated events from the "
+                        "energy histograms (their charge is unreliable). "
+                        "Default: include all events; the `saturated` flag is "
+                        "always written to energy_charges.csv either way.")
 
 
 def _default_out_dir(settings) -> Path:
@@ -115,6 +120,7 @@ def run(args: argparse.Namespace) -> int:
         cutoff_mhz=cutoff_mhz,
         nbins=args.nbins,
         entry_stop=settings.entry_stop,
+        exclude_saturated=args.exclude_saturated,
         # Step 6 bug-fix: the wavelet/STFT overlay curves now use the SAME
         # resolved denoiser config (via pipeline.denoise.denoise) as
         # `hits --denoiser <x>` — no longer hardcoded module constants.
