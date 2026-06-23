@@ -64,6 +64,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                    help="Right-panel heatmap bins per axis (default 40, "
                         "= 5 nVs per bin over 0-200 nVs).")
     g.add_argument("--area-units", choices=("pVs", "nVs"), default="nVs")
+    g.add_argument("--log-y", action="store_true",
+                   help="Log-scale the Δt-histogram y-axis (entries) so the "
+                        "tails of the timing distribution are visible.")
     g.add_argument("--method-label", default=r"deconv $t_{peak}$")
 
 
@@ -199,6 +202,7 @@ def run(args: argparse.Namespace) -> int:
             area_unit_label=args.area_units,
             ref_label=args.ref_branch.split("_")[-1].upper(),
             scan_label=args.scan_branch.split("_")[-1].upper(),
+            log_y=args.log_y,
         )
 
     gif_path = out_dir / f"timewalk_deconv_Run{run_id}.gif"

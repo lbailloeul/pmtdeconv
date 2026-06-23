@@ -274,6 +274,7 @@ def render_frame(
     dpi: int = 110,
     ref_label: str = "CH1",
     scan_label: str = "CH2",
+    log_y: bool = False,
 ) -> tuple[float, float, int]:
     """Render one frame; return (mu, sigma, n_in_window).
 
@@ -313,7 +314,11 @@ def render_frame(
             lw=1.8,
             label=fr"$\mu={mu:.2f}$ ns, $\sigma={sig:.2f}$ ns",
         )
-    ax.set_yscale("linear")
+    if log_y:
+        ax.set_yscale("log")
+        ax.set_ylim(bottom=0.5)
+    else:
+        ax.set_yscale("linear")
     ax.set_xlim(*xrange)
     ax.set_xlabel(f"{scan_label} time - {ref_label} time [ns]")
     ax.set_ylabel("entries")
