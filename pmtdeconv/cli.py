@@ -162,10 +162,12 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     # silently drifted from presets/datasets.py when na22_3ch was added.
     from pmtdeconv.presets.datasets import list_datasets
     g.add_argument("--dataset",
-                   choices=tuple(list_datasets()),
                    default=argparse.SUPPRESS,
-                   help="Dataset preset (resolves dt_ns, tree, branches, "
-                        "polarity, default template, cosine cutoff).")
+                   metavar="NAME_OR_CARD",
+                   help="Dataset: a registry name (" + ", ".join(list_datasets())
+                        + ") OR a path to a YAML card / directory with "
+                        "dataset.yaml. Resolves dt_ns, tree, branches, "
+                        "polarity, default template, cosine cutoff.")
     g.add_argument("--preset", default=argparse.SUPPRESS,
                    help="Named configuration preset (overlays on top of "
                         "--dataset). See `pmtdeconv config show <preset>`.")

@@ -31,6 +31,7 @@ dependencies = [
     "PyWavelets>=1.4",
     "Pillow>=10.0",   # used by timewalk_gif_impl for animated GIF stitching
     "tqdm>=4.65",     # progress bars in timewalk_gif_impl
+    "PyYAML>=6.0",    # dataset cards (presets/cards.py)
 ]
 
 [project.optional-dependencies]

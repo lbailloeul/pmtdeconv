@@ -23,6 +23,7 @@ from pmtdeconv.presets.datasets import (
     DATASETS,
     DatasetPreset,
     get_dataset,
+    resolve_dataset,
 )
 # Merge auto-generated tuned presets (PR 10) into CONFIGS so the
 # resolver, info presets, and `--preset <name>` all see them
@@ -249,7 +250,7 @@ def resolve_settings(args: argparse.Namespace,
 
     dataset_name = getattr(args, "dataset", None)
     if dataset_name is not None:
-        _apply_dataset(settings, provenance, get_dataset(dataset_name))
+        _apply_dataset(settings, provenance, resolve_dataset(dataset_name))
 
     preset_name = getattr(args, "preset", None)
     if preset_name is not None:

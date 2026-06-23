@@ -291,3 +291,18 @@ def get_dataset(name: str) -> DatasetPreset:
         raise KeyError(f"Unknown dataset preset {name!r}. "
                        f"Known: {', '.join(DATASETS)}")
     return DATASETS[name]
+
+
+def resolve_dataset(name_or_path: str) -> DatasetPreset:
+    """Resolve a ``--dataset`` value to a :class:`DatasetPreset`.
+
+    A card *path* (``./run.yaml``, a dir with ``dataset.yaml``, or any existing
+    path) is loaded via :func:`pmtdeconv.presets.cards.load_card`; otherwise the
+    value is a registry *name* resolved by :func:`get_dataset`. (S2 will insert
+    name-based card discovery under ``<data_root>/calibrations/datasets/`` before
+    the in-code registry.)
+    """
+    from pmtdeconv.presets.cards import is_card_reference, load_card
+    if is_card_reference(name_or_path):
+        return load_card(name_or_path)
+    return get_dataset(name_or_path)
