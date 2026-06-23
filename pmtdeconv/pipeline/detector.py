@@ -39,7 +39,6 @@ class Detector:
     entry_stop: Optional[int]
     dt_ns: float
     polarity: int
-    sat_thresh: float
     format: str
     file_glob: Optional[str]
     tree: Optional[str]
@@ -95,7 +94,6 @@ class Detector:
             # the command overrides per-file for object-format dt_ns=="auto".
             dt_ns=(float(settings.dt_ns) if settings.dt_ns != "auto" else 0.5051),
             polarity=int(settings.polarity),
-            sat_thresh=float(settings.sat_thresh_mv),
             format=settings.format,
             file_glob=settings.file_glob,
             tree=settings.tree,

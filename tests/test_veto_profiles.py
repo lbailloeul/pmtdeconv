@@ -119,7 +119,7 @@ def test_calibrate_derives_and_roundtrips():
             w[400:410] += 120.0          # a pulse near sample 400
             yield w, 0.5
 
-    derived, stats = _derive(waves(), base, sat_thresh=960.0, k_mad=5.0)
+    derived, stats = _derive(waves(), base, k_mad=5.0)
     assert stats["sample"] == 60
     assert derived.no_trigger_amp > 0.0
     assert derived.t_peak_min_ns <= derived.t_peak_max_ns
@@ -168,7 +168,7 @@ def test_calibrate_scored_with_truth():
                      "saturated"]]
 
     derived, stats = _derive_scored(stats_df, truth_df, base,
-                                    sat_thresh=960.0, target_eff=0.95)
+                                    target_eff=0.95)
     assert derived is not None
     assert stats["criterion"] == "ground-truth-scored"
     assert stats["n_signal"] == n_sig          # saturated rows excluded
@@ -187,7 +187,7 @@ def test_calibrate_scored_with_truth():
     d2, s2 = _derive_scored(
         tiny[["event", "branch", "raw_peak", "t_raw_ns", "max_val"]],
         tiny[["event", "branch", "true_amp_mv", "true_center_ns", "saturated"]],
-        base, sat_thresh=960.0, target_eff=0.95)
+        base, target_eff=0.95)
     assert d2 is None and s2 is None
 
 

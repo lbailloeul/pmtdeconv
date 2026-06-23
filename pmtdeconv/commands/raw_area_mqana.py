@@ -32,6 +32,7 @@ from pmtdeconv.io.manifest import maybe_dry_run_exit, write_manifest
 from pmtdeconv.io.object_format import (
     detect_populated_channels, iter_object_run, read_dt_ns,
 )
+from pmtdeconv.core.dsp import detect_saturation_plateau
 from pmtdeconv.io.root_loader import select_tree_key, to_numpy2d
 from pmtdeconv.io.output_paths import raw_area_output_dir
 from pmtdeconv.io.schemas import AREA_COLUMNS
@@ -64,6 +65,18 @@ def _resolve_branches(tree, requested) -> List[str]:
     return [k for k in sorted(tree.keys()) if k.startswith("d0_ch")]
 
 
+def _plateau_saturated(w2d, polarity: int):
+    """Per-event plateau saturation flag for a (n, N) waveform chunk
+    (polarity-corrected). Universal — no per-detector rail threshold."""
+    import numpy as np
+    pw = polarity * np.asarray(w2d, dtype=float)
+    out = np.zeros(len(pw), dtype=bool)
+    for j in range(len(pw)):
+        sig = float(np.nanstd(pw[j][:100])) or 1.0
+        out[j] = bool(detect_saturation_plateau(pw[j], sig)[0])
+    return out
+
+
 def run(args: argparse.Namespace) -> int:
     import numpy as np  # noqa
     import pandas as pd  # noqa
@@ -72,7 +85,6 @@ def run(args: argparse.Namespace) -> int:
     settings, provenance = resolve_settings(args)
 
     polarity = int(settings.polarity)
-    sat_mv = float(settings.sat_thresh_mv)
     # dt_ns may be 'auto' for object-format datasets — resolved per-file
     # inside the run loop below.
 
@@ -157,7 +169,7 @@ def run(args: argparse.Namespace) -> int:
                     # Multi-channel LANL files often have unrelated
                     # channels clipped on the same event, so per-event
                     # OR-flagging would NaN every channel.
-                    sat = (polarity * w).max(axis=1) >= sat_mv
+                    sat = _plateau_saturated(w, polarity)
                     if args.full_window:
                         area, peak_height = fixed_window_area(
                             w, dt_ns, n_pre=args.n_pre,
@@ -201,7 +213,7 @@ def run(args: argparse.Namespace) -> int:
                     br_arrays = {b: to_numpy2d(arrays[b]) for b in branches}
                     sat = np.zeros(n_chunk, dtype=bool)
                     for b in branches:
-                        sat |= (polarity * br_arrays[b]).max(axis=1) >= sat_mv
+                        sat |= _plateau_saturated(br_arrays[b], polarity)
 
                     for b in branches:
                         w = br_arrays[b]

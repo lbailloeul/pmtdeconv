@@ -80,7 +80,7 @@ def run(args: argparse.Namespace) -> int:
 # ─── leaves ────────────────────────────────────────────────────────
 
 def _info_datasets(args) -> int:
-    print(f"{'name':<14}  {'fmt':>6}  {'dt_ns':>6}  {'sat':>6}  {'pol':>3}  "
+    print(f"{'name':<14}  {'fmt':>6}  {'dt_ns':>6}  {'pol':>3}  "
           f"{'cos_MHz':>8}  paths / templates")
     print("-" * 110)
     for name, ds in DATASETS.items():
@@ -90,7 +90,7 @@ def _info_datasets(args) -> int:
         dt = (f"{ds.dt_ns:.4f}" if isinstance(ds.dt_ns, float)
               else str(ds.dt_ns))
         print(f"{ds.name:<14}  {ds.format:>6}  {dt:>6}  "
-              f"{ds.sat_thresh_mv:>6.0f}  {ds.polarity:>+3d}  "
+              f"{ds.polarity:>+3d}  "
               f"{ds.cosine_cutoff_mhz:>8.1f}")
         print(f"{'':<14}     data_dir: {ds.data_dir}")
         if ds.offline_data_dir is not None:

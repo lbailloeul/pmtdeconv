@@ -165,7 +165,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
                    choices=tuple(list_datasets()),
                    default=argparse.SUPPRESS,
                    help="Dataset preset (resolves dt_ns, tree, branches, "
-                        "polarity, default template, sat-thresh, cosine cutoff).")
+                        "polarity, default template, cosine cutoff).")
     g.add_argument("--preset", default=argparse.SUPPRESS,
                    help="Named configuration preset (overlays on top of "
                         "--dataset). See `pmtdeconv config show <preset>`.")
@@ -183,8 +183,6 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--dt-ns", type=str, default=argparse.SUPPRESS,
                    help="Override sample spacing in ns. Pass 'auto' to "
                         "read from object-format files.")
-    g.add_argument("--sat-thresh", type=float, default=argparse.SUPPRESS,
-                   help="Saturation threshold in mV.")
     g.add_argument("--out-dir", type=str, default=argparse.SUPPRESS,
                    help="Output directory (subcommand-specific default).")
     g.add_argument("--out-suffix", type=str, default=argparse.SUPPRESS,

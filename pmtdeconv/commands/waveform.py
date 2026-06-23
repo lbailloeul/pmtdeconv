@@ -126,7 +126,6 @@ def run(args: argparse.Namespace) -> int:
             cosine_cutoff_mhz=settings.cosine_cutoff_mhz,
             wavelet=settings.wavelet, wlevel=settings.wlevel,
             mode=settings.wmode, thresh_k=settings.wthresh_k,
-            sat_thresh=settings.sat_thresh_mv,
             no_trigger_amp=args.no_trigger_amp,
             t_peak_min_ns=args.t_peak_min_ns,
             afterpulse_window_ns=args.afterpulse_window,

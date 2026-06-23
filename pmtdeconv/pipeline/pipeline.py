@@ -77,7 +77,6 @@ class AreaMode:
     sig_end: int
     n_intervals: int
     fft_pad: bool
-    sat_thresh: float
     no_trigger_amp: float
     t_peak_min_ns: float
     afterpulse_window_ns: float
@@ -311,7 +310,7 @@ def _denoise_u(u, args):
 
 
 def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
-                   sat_threshold, sink, g_cache):
+                   sink, g_cache):
     """Run the peak-finding deconvolution body on one ``EventRecord``.
 
     Returns the list of result-row dicts the event contributes. Polarity is
@@ -454,7 +453,7 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
                                 if u_pre_denoise is not None else u_rec),
             deconv_post_denoise=u_rec,
             peaks=peaks,
-            ped=ped_i, sat_thresh=sat_threshold,
+            ped=ped_i,
         )
 
     row_base = {
@@ -522,7 +521,7 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
 
 def run_hits(events: Iterable, *, args, profile: HitsProfile,
              templates: Dict[str, dict], cosine_cutoff_mhz: float,
-             sat_threshold: float, sink) -> List[dict]:
+             sink) -> List[dict]:
     """Run the hits engine over a stream of ``EventRecord`` (mirrors
     :func:`run_area`). The per-channel kernel/filter cache is shared across the
     whole stream. Returns the flat list of result-row dicts; the caller
@@ -531,6 +530,5 @@ def run_hits(events: Iterable, *, args, profile: HitsProfile,
     rows: List[dict] = []
     for rec in events:
         rows.extend(_process_event(rec, args, profile, templates,
-                                   cosine_cutoff_mhz, sat_threshold,
-                                   sink, g_cache))
+                                   cosine_cutoff_mhz, sink, g_cache))
     return rows

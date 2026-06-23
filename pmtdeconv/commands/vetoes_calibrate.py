@@ -36,6 +36,7 @@ import numpy as np
 import pandas as pd
 
 from pmtdeconv import PROJECT_ROOT
+from pmtdeconv.core.dsp import detect_saturation_plateau
 from pmtdeconv.io.manifest import maybe_dry_run_exit, write_manifest
 from pmtdeconv.pipeline.calibration import ProvenanceRecord
 from pmtdeconv.presets import resolve_settings
@@ -131,7 +132,7 @@ def _collect_raw_stats(settings, n_max: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _derive(waves, base: VetoProfile, sat_thresh: float, k_mad: float):
+def _derive(waves, base: VetoProfile, k_mad: float):
     raw_peaks, t_peaks, noises = [], [], []
     rail = 0
     n = 0
@@ -145,7 +146,7 @@ def _derive(waves, base: VetoProfile, sat_thresh: float, k_mad: float):
         noises.append(noise)
         raw_peaks.append(float(np.max(wave) - med))
         t_peaks.append(int(np.argmax(wave)) * dt_ns)
-        if sat_thresh > 0 and float(np.max(wave)) >= sat_thresh:
+        if detect_saturation_plateau(wave, noise)[0]:
             rail += 1
 
     if n == 0:
@@ -192,7 +193,7 @@ def _describe(base: VetoProfile, derived: VetoProfile, stats: dict) -> None:
 
 
 def _derive_scored(stats_df: pd.DataFrame, truth_df: pd.DataFrame,
-                   base: VetoProfile, sat_thresh: float,
+                   base: VetoProfile,
                    target_eff: float = 0.99):
     """Ground-truth scored derivation. Returns ``(derived, stats)`` or
     ``(None, None)`` when too few truth-matched signal rows exist (caller
@@ -209,8 +210,7 @@ def _derive_scored(stats_df: pd.DataFrame, truth_df: pd.DataFrame,
     if m.empty:
         return None, None
     is_signal = ((~m["saturated"].astype(bool))
-                 & (m["true_amp_mv"] > 0.0)
-                 & (m["max_val"] < sat_thresh))
+                 & (m["true_amp_mv"] > 0.0))
     signal = m[is_signal]
     if len(signal) < 5:
         return None, None
@@ -226,8 +226,7 @@ def _derive_scored(stats_df: pd.DataFrame, truth_df: pd.DataFrame,
     in_win = (m["t_raw_ns"] >= t_lo) & (m["t_raw_ns"] <= t_hi)
     kept = m[(m["raw_peak"] >= floor) & in_win]
     kept_sig = kept[(~kept["saturated"].astype(bool))
-                    & (kept["true_amp_mv"] > 0.0)
-                    & (kept["max_val"] < sat_thresh)]
+                    & (kept["true_amp_mv"] > 0.0)]
     purity = round(len(kept_sig) / len(kept), 4) if len(kept) else 1.0
 
     derived = replace(base, name=f"{base.name}_scored",
@@ -273,7 +272,6 @@ def run(args: argparse.Namespace) -> int:
                           duration_seconds=time.time() - t0):
         return 0
 
-    sat_mv = float(settings.sat_thresh_mv)
     criterion = "data-derived"
     truth_df = None
     if args.truth_csv:
@@ -288,7 +286,7 @@ def run(args: argparse.Namespace) -> int:
     derived = stats = None
     if truth_df is not None:
         stats_df = _collect_raw_stats(settings, args.sample_events)
-        derived, stats = _derive_scored(stats_df, truth_df, base, sat_mv,
+        derived, stats = _derive_scored(stats_df, truth_df, base,
                                         args.target_eff)
         if derived is None:
             print("[vetoes calibrate] truth matched too few signal rows; "
@@ -299,7 +297,7 @@ def run(args: argparse.Namespace) -> int:
 
     if derived is None:
         waves = _iter_sample_waves(settings, args.sample_events)
-        derived, stats = _derive(waves, base, sat_mv, args.k_mad)
+        derived, stats = _derive(waves, base, args.k_mad)
         _describe(base, derived, stats)
 
     written = None

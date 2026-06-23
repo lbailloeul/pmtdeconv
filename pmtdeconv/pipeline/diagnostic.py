@@ -115,7 +115,7 @@ class DiagnosticSink:
                  deconv_pre_denoise: np.ndarray,
                  deconv_post_denoise: np.ndarray,
                  peaks: np.ndarray,
-                 ped: float, sat_thresh: float) -> None:
+                 ped: float) -> None:
         """6-panel summary PDF for this event."""
         from pmtdeconv.plotting.style import use_minimal_style, minimal_axes
         use_minimal_style()
@@ -125,8 +125,6 @@ class DiagnosticSink:
         ax[0].plot(t_ns, raw, "k-", lw=0.5)
         ax[0].axhline(ped, color="C2", lw=0.6, ls="--",
                       label=f"baseline {ped:.1f}")
-        ax[0].axhline(sat_thresh, color="C3", lw=0.6, ls=":",
-                      label=f"sat {sat_thresh:.0f}")
         ax[0].set_title(f"raw waveform — event {entry} {branch}")
         ax[0].set_xlabel("t [ns]"); ax[0].set_ylabel("mV")
         ax[0].legend(fontsize=8); ax[0].grid(True, alpha=0.3)

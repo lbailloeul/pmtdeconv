@@ -32,7 +32,6 @@ def _detector(**kw) -> Detector:
 def test_na22_wavelet_detector_matches_legacy_literals():
     det = _detector(dataset="na22")
     assert det.cosine_cutoff_mhz == 450.0
-    assert det.sat_thresh == 960.0
     assert det.polarity == 1
     assert det.denoiser == "wavelet"
     assert det.no_denoise is False
@@ -53,7 +52,6 @@ def test_na22_stft_keeps_dataset_cutoff_not_100():
     det = _detector(dataset="na22", denoiser="stft")
     assert det.denoiser == "stft"
     assert det.cosine_cutoff_mhz == 450.0
-    assert det.sat_thresh == 960.0
 
 
 def test_na22_none_denoiser():
@@ -68,7 +66,6 @@ def test_na22_3ch_negative_polarity_and_cutoff():
     det = _detector(dataset="na22_3ch", allow_generic_fallback=True)
     assert det.cosine_cutoff_mhz == 100.0
     assert det.polarity == -1
-    assert det.sat_thresh == 495.0
     assert det.template.provenance.source == "generic"
 
 

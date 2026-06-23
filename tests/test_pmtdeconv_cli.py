@@ -47,7 +47,7 @@ def _make_args(**overrides) -> argparse.Namespace:
     defaults = dict(
         dataset=None, preset=None, runs=None, entry_stop=None,
         branches=None, data_root=None, tree=None, dt_ns=None,
-        sat_thresh=None, out_dir=None, out_suffix=None,
+        out_dir=None, out_suffix=None,
         manifest=None, hash_inputs=None, dry_run=True,
         log_level=None,
     )
@@ -125,13 +125,13 @@ def test_list_datasets_has_seven():
 
 
 @pytest.mark.parametrize("name,expected", [
-    ("na22",         dict(dt_ns=0.5051, sat_thresh_mv=960.0, polarity=+1,
+    ("na22",         dict(dt_ns=0.5051, polarity=+1,
                           cosine_cutoff_mhz=450.0)),
-    ("cd109",        dict(dt_ns=1.432, sat_thresh_mv=950.0, polarity=+1,
+    ("cd109",        dict(dt_ns=1.432, polarity=+1,
                           cosine_cutoff_mhz=50.0)),
-    ("milliqan",     dict(dt_ns=1.25, sat_thresh_mv=950.0, polarity=+1,
+    ("milliqan",     dict(dt_ns=1.25, polarity=+1,
                           cosine_cutoff_mhz=100.0)),
-    ("lanl_806",     dict(dt_ns=1.25, sat_thresh_mv=950.0, polarity=-1,
+    ("lanl_806",     dict(dt_ns=1.25, polarity=-1,
                           cosine_cutoff_mhz=100.0)),
 ])
 def test_dataset_preset_resolution(name, expected):
@@ -167,31 +167,26 @@ def test_preset_without_explicit_dataset_uses_base():
     args = _make_args(preset="na22-timewalk-winning-2026-05")
     settings, prov = resolve_settings(args)
     assert settings.dataset == "na22"
-    assert settings.sat_thresh_mv == 960.0    # from dataset
+    assert settings.cosine_cutoff_mhz == 450.0    # from dataset
     assert settings.wthresh_k == 1.0           # from preset
 
 
 # ─── CLI flag overrides ───────────────────────────────────────────
 
 def test_cli_flag_overrides_dataset():
-    args = _make_args(dataset="na22", dt_ns="1.0", sat_thresh=999.0)
+    args = _make_args(dataset="na22", dt_ns="1.0")
     settings, prov = resolve_settings(args)
     assert settings.dt_ns == 1.0
     assert prov["dt_ns"] == "cli"
-    assert settings.sat_thresh_mv == 999.0
-    assert prov["sat_thresh_mv"] == "cli"
     # Other dataset fields untouched
     assert settings.polarity == +1
     assert prov["polarity"] == "dataset"
 
 
 def test_cli_flag_overrides_preset():
-    args = _make_args(dataset="na22", preset="na22-timewalk-winning-2026-05",
-                      sat_thresh=999.0)
+    args = _make_args(dataset="na22", preset="na22-timewalk-winning-2026-05")
     args.cosine_cutoff_mhz = 200.0
     settings, prov = resolve_settings(args)
-    assert settings.sat_thresh_mv == 999.0
-    assert prov["sat_thresh_mv"] == "cli"
     assert settings.cosine_cutoff_mhz == 200.0
     assert prov["cosine_cutoff_mhz"] == "cli"
 
@@ -249,15 +244,13 @@ def test_manifest_schema_required_keys(tmp_path):
 
 
 def test_manifest_provenance_field(tmp_path):
-    args = _make_args(dataset="na22", preset="na22-timewalk-winning-2026-05",
-                      sat_thresh=999.0)
+    args = _make_args(dataset="na22", preset="na22-timewalk-winning-2026-05")
     settings, prov = resolve_settings(args)
     out = tmp_path / "manifest.json"
     write_manifest(subcommand="pulse", settings=settings, provenance=prov,
                    inputs=[], outputs=[], out_path=out)
     m = json.loads(out.read_text())
     sp = m["settings_provenance"]
-    assert sp["sat_thresh_mv"] == "cli"
     assert sp["cosine_cutoff_mhz"] == "config"
     assert sp["polarity"] == "dataset"
 

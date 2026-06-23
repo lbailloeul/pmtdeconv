@@ -82,7 +82,6 @@ def _base_common(args: argparse.Namespace,
         ("data_root", "--data-root"),
         ("tree", "--tree"),
         ("dt_ns", "--dt-ns"),
-        ("sat_thresh", "--sat-thresh"),
         ("out_suffix", "--out-suffix"),
         ("log_level", "--log-level"),
     )

@@ -32,14 +32,13 @@ CONFIGS.update(_TUNED_CONFIGS)
 
 # Mapping argparse-arg name (after argparse's hyphen → underscore) →
 # Settings field name. Argparse uses underscores already so most are
-# identity, but some legacy spellings differ (e.g. CLI --sat-thresh
-# argparse-key sat_thresh ↔ Settings sat_thresh_mv).
+# identity, but some legacy spellings differ (e.g. CLI --branches
+# argparse-key branches ↔ Settings branch_pattern).
 CLI_TO_SETTINGS = {
     "data_root":           "data_root",
     "tree":                "tree",
     "branches":            "branch_pattern",
     "dt_ns":               "dt_ns",
-    "sat_thresh":          "sat_thresh_mv",
     "out_dir":             "out_dir",
     "out_suffix":          "out_suffix",
     # Bug-fix 2 (2026-05-30 scan): --manifest was being parsed but
@@ -93,7 +92,6 @@ class Settings:
     tree:                  str = "waveforms"
     branch_pattern:        Union[List[str], Literal["auto"]] = "auto"
     dt_ns:                 Union[float, Literal["auto"]] = 1.25
-    sat_thresh_mv:         float = 950.0
     polarity:              int = +1
     cosine_cutoff_mhz:     float = 100.0
     default_template_csv:  Optional[Path] = None

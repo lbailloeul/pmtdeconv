@@ -74,7 +74,6 @@ def process_run_object(args, diagnostic_sink=None):
     entry_stop = args.entry_stop
     step_size = 100
     cosine_cutoff_mhz = float(getattr(args, "cosine_cutoff_mhz", None) or 450.0)
-    sat_threshold = args.sat_thresh
 
     explicit_out_dir = getattr(args, "out_dir", None)
     if explicit_out_dir is not None:
@@ -91,7 +90,6 @@ def process_run_object(args, diagnostic_sink=None):
     print(f"Sample interval: dt_ns = {dt_ns}  ({1.0/dt_ns:.3f} GSa/s)")
     print(f"Filter: cosine (cutoff={cosine_cutoff_mhz} MHz)")
     print(f"Polarity: {polarity:+d}")
-    print(f"Saturation threshold: {sat_threshold} mV")
     print(f"Output: {out_dir}")
 
     explicit_data_root = getattr(args, "data_root", None)
@@ -130,7 +128,7 @@ def process_run_object(args, diagnostic_sink=None):
 
     results = run_hits(_events(), args=args, profile=WAVELET_PROFILE,
                        templates=ch_templates, cosine_cutoff_mhz=cosine_cutoff_mhz,
-                       sat_threshold=sat_threshold, sink=sink)
+                       sink=sink)
     tables = write_deconv_pulse_result_tables(results, out_dir)
     print_deconv_pulse_summary(tables)
     return _veto_report(tables.all_rows,
@@ -157,7 +155,6 @@ def process_run(args, diagnostic_sink=None):
     entry_stop = args.entry_stop
     step_size = 500
     cosine_cutoff_mhz = float(getattr(args, "cosine_cutoff_mhz", None) or 450.0)
-    sat_threshold = args.sat_thresh
 
     explicit_data_root = getattr(args, "data_root", None)
     if explicit_data_root is not None:
@@ -185,7 +182,6 @@ def process_run(args, diagnostic_sink=None):
         print(f"Wavelet denoising: {args.wavelet}, level={args.wlevel}, "
               f"mode={args.wmode}, k={args.wthresh_k}"
               + (",  ALSO on raw waveform" if args.denoise_raw else ""))
-    print(f"Saturation threshold: {sat_threshold} mV")
     print(f"Polarity: {polarity:+d}")
     print(f"Output: {out_dir}")
 
@@ -200,7 +196,7 @@ def process_run(args, diagnostic_sink=None):
 
     results = run_hits(_events(), args=args, profile=WAVELET_PROFILE,
                        templates=ch_templates, cosine_cutoff_mhz=cosine_cutoff_mhz,
-                       sat_threshold=sat_threshold, sink=sink)
+                       sink=sink)
     tables = write_deconv_pulse_result_tables(results, out_dir)
     print_deconv_pulse_summary(tables, show_full_results=True)
     return _veto_report(tables.all_rows,
@@ -231,7 +227,6 @@ def process_run_stft(args, diagnostic_sink=None):
     step_size = 500
     # STFT path historically uses 100 MHz (narrower than the wavelet 450).
     cosine_cutoff_mhz = float(getattr(args, "cosine_cutoff_mhz", None) or 100.0)
-    sat_threshold = getattr(args, "sat_thresh", 999.0)
     stft_freq_cutoff_hz = getattr(args, "stft_freq_cutoff_mhz", 175.0) * 1e6
     stft_nperseg_ns = getattr(args, "stft_nperseg_ns", 20.0)
     stft_amp_threshold = getattr(args, "stft_amp_threshold", 10.0)
@@ -262,7 +257,6 @@ def process_run_stft(args, diagnostic_sink=None):
     print(f"Filter: cosine (cutoff={cosine_cutoff_mhz} MHz)")
     print(f"STFT: nperseg={stft_nperseg_ns} ns, freq_cutoff={stft_freq_cutoff_hz:.0e}, "
           f"amp_threshold={stft_amp_threshold}")
-    print(f"Saturation threshold: {sat_threshold} mV")
     print(f"Output: {out_dir}")
 
     def _events():
@@ -276,7 +270,7 @@ def process_run_stft(args, diagnostic_sink=None):
 
     results = run_hits(_events(), args=args, profile=STFT_PROFILE,
                        templates=ch_templates, cosine_cutoff_mhz=cosine_cutoff_mhz,
-                       sat_threshold=sat_threshold, sink=sink)
+                       sink=sink)
     tables = write_deconv_pulse_result_tables(results, out_dir)
     print_deconv_pulse_summary(tables)
     return _veto_report(tables.all_rows,

@@ -106,7 +106,6 @@ class DatasetPreset:
     # `dt_ns` is either a fixed sample spacing in ns or "auto" — meaning
     # "read from the object-format `digitizers.nanosecondsPerSample` field".
     dt_ns: Union[float, Literal["auto"]]
-    sat_thresh_mv: float
     polarity: int                       # +1 or -1
     cosine_cutoff_mhz: float
     default_template_csv: Optional[Path]
@@ -147,10 +146,6 @@ DATASETS: Dict[str, DatasetPreset] = {
         tree="waveforms",
         branch_pattern=["d0_ch1", "d0_ch2"],
         dt_ns=0.5051,
-        # 960 mV codifies CLAUDE.md note + this session's finding that
-        # sat-thresh=930 (the older default) kills ~90k ch1 events on
-        # Run 65213. See ``project_na22_validation`` memory.
-        sat_thresh_mv=960.0,
         polarity=+1,
         # Matches the legacy default in both wavelets_cosine_deconvolution_Na22.py
         # and deconv_area_Na22.py (the wavelet-pipeline default; the STFT
@@ -176,9 +171,6 @@ DATASETS: Dict[str, DatasetPreset] = {
         # Override per run with --dt-ns (66727: 0.5045841, 66728:
         # 0.5045843, 66729: 0.5045848).
         dt_ns=0.5045844,
-        # DRS Range Center 0 → bipolar ±500 mV window; pulses clip at
-        # the −500 mV rail (66727 ch2 1% quantile = −499.6 mV).
-        sat_thresh_mv=495.0,
         polarity=-1,                  # NEGATIVE-going pulses in this setup
         # 100 MHz (2026-06-10 diagnosis): 450 inherited from na22 produced
         # a ringing comb (raw waveforms ring; tallest-peak timing lottery).
@@ -204,7 +196,6 @@ DATASETS: Dict[str, DatasetPreset] = {
         tree="waveforms",
         branch_pattern=["d0_ch1", "d0_ch2"],
         dt_ns=1.432,
-        sat_thresh_mv=950.0,
         polarity=+1,
         cosine_cutoff_mhz=50.0,    # conditioning cliff above ~65 MHz
         default_template_csv=CD109_STACKED_UNLOCKED_CSV,
@@ -223,7 +214,6 @@ DATASETS: Dict[str, DatasetPreset] = {
         tree="waveforms",
         branch_pattern="auto",
         dt_ns=1.25,
-        sat_thresh_mv=950.0,
         polarity=+1,
         cosine_cutoff_mhz=100.0,
         default_template_csv=None,    # falls back to MILLIQAN_TEMPLATE
@@ -240,7 +230,6 @@ DATASETS: Dict[str, DatasetPreset] = {
         tree="waveforms",
         branch_pattern="auto",
         dt_ns=1.25,
-        sat_thresh_mv=950.0,
         polarity=-1,                  # NEGATIVE-going LANL pulses
         cosine_cutoff_mhz=100.0,
         default_template_csv=None,    # falls back to LANL_TEMPLATE
@@ -257,7 +246,6 @@ DATASETS: Dict[str, DatasetPreset] = {
         tree="Events",
         branch_pattern="auto",
         dt_ns="auto",                 # read from digitizers.nanosecondsPerSample
-        sat_thresh_mv=950.0,
         polarity=-1,
         cosine_cutoff_mhz=100.0,
         default_template_csv=None,
@@ -278,7 +266,6 @@ DATASETS: Dict[str, DatasetPreset] = {
         tree="Events",
         branch_pattern="auto",
         dt_ns="auto",
-        sat_thresh_mv=950.0,
         polarity=-1,
         cosine_cutoff_mhz=100.0,
         default_template_csv=None,

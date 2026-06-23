@@ -229,7 +229,6 @@ def run(args: argparse.Namespace) -> int:
                 cosine_cutoff_mhz=cutoff,
                 wavelet=wavelet_arg, wlevel=WLEVEL_DEFAULT,
                 mode=WMODE_DEFAULT, thresh_k=WTHRESH_K_DEFAULT,
-                sat_thresh=settings.sat_thresh_mv,
                 no_trigger_amp=NO_TRIGGER_AMP_DEFAULT,
                 t_peak_min_ns=T_PEAK_MIN_NS_DEFAULT,
                 afterpulse_window_ns=0.0,
