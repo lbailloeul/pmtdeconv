@@ -9,7 +9,7 @@ sharp, individual hits that ordinary raw integration cannot resolve.
 It extracts these hits from digitized DRS4 / object-format / pulse-list ROOT
 files using FFT deconvolution against a calibrated single-photoelectron (SPE)
 template, with optional STFT or wavelet denoising. Dataset-agnostic: na22,
-cd109, milliqan, lanl_806, lanl_835, lanl_movedBar.
+na22_3ch, cd109, milliqan, lanl_806, lanl_835, lanl_movedBar.
 
 **The single deployable entry point is `pmtdeconv`** — a unified CLI organized
 around output granularity (`hits` vs `area`) plus supporting template,
@@ -42,9 +42,9 @@ bailloeulScripts/
 │   ├── cli.py, __main__.py     # Argparse tree + dispatcher
 │   ├── utils.py                # Shared math (filters, baseline, vetoes,
 │   │                             STFT + wavelet denoising)
-│   ├── commands/               # One module per leaf subcommand (16 total)
-│   ├── pipeline/               # process_{area,hits,hits_stft,offline}
-│   │                             template_{build,aggregate}_impl,
+│   ├── commands/               # One module per leaf subcommand (~26 modules)
+│   ├── pipeline/               # process_{area,hits}, deconv, denoise,
+│   │                             detector, template_{build,aggregate}_impl,
 │   │                             scoring, diagnostic sink, timewalk scan
 │   ├── plotting/               # scatter2d, marginals, energy, analyze,
 │   │                             timewalk_gif_impl, sweep curves, style
@@ -190,10 +190,11 @@ python -m pmtdeconv template aggregate               # → outputs/spe_templates
 python -m pmtdeconv run na22-timewalk --raw-source mqana
 python -m pmtdeconv results list
 
-# Tune the denoiser to your detector:
+# Tune a denoiser to your detector — --write-presets saves date-stamped
+# ConfigPresets and refreshes a stable `-latest-` alias per family:
 python -m pmtdeconv tune wavelet --dataset na22 --write-presets
 python -m pmtdeconv hits --dataset na22 --runs 65213 \
-    --preset na22-wavelet-tuned-2026-05-29-level3
+    --preset na22-wavelet-tuned-latest-level3
 
 # Debug an individual event (diagnostic flag):
 python -m pmtdeconv hits --dataset na22 --runs 65213 \
@@ -201,8 +202,8 @@ python -m pmtdeconv hits --dataset na22 --runs 65213 \
 ```
 
 See the [Using `pmtdeconv` (unified CLI)](#using-pmtdeconv-unified-cli) section
-below for worked examples covering all six dataset formats and the new tune /
-diagnostic features.
+below for worked examples covering every dataset format (flat / object /
+offline) and the tune / diagnostic features.
 
 ## Pipeline overview
 
@@ -219,12 +220,11 @@ The deconvolution pipeline follows this sequence:
 
 ### Three integration modes
 
-| Script | Per trigger | Peak-find? | Area window |
+| Command | Per trigger | Peak-find? | Area window |
 |---|---|---|---|
-| `cosine_advanced_convolve_at_scale_Na22.py` | All peaks above SNR | ✓ | Trough-walked per peak |
-| `wavelets_cosine_deconvolution_Na22.py` | All peaks above SNR | ✓ | Trough-walked per peak |
-| `deconv_area_Na22.py` | One row per channel | ✗ | Fixed sample window |
-| `raw_area_Na22.py` | One row per channel | ✗ | Fixed sample window, **no deconv** |
+| `hits` (`--denoiser wavelet` default, or `stft`) | All peaks above SNR | ✓ | Trough-walked per peak |
+| `area` | One row per channel | ✗ | Fixed window (whole-waveform deconv) |
+| `raw-area mqana` | One row per channel | ✗ | Fixed window, **no deconv** |
 
 ## Detector parameters (Na22 lab — DRS4)
 
@@ -237,7 +237,10 @@ The deconvolution pipeline follows this sequence:
 | Cosine cutoff | 100 MHz (peak-finding) / 450 MHz (waveform summary wavelet) |
 | Wavelet (active) | `sym8` L5 hard, `thresh_k=2.0` |
 
-Templates are loaded per-channel from `outputs/biexp_fits_Na22_lab/biexp_fit_results.csv`.
+Templates are resolved per-channel from the dataset's configured SPE CSV — for
+na22 this is the calibrated Cd109 stacked template under
+`outputs/biexp_fits_Cd109_lab_stacked/` (build it with `template build --dataset
+cd109` + `template aggregate`, or supply your own with `--template`).
 
 ## Data layout
 
@@ -478,7 +481,7 @@ is what `--dataset cd109/na22` points at by default.
 ```bash
 # Tighter cosine cutoff, no preset
 python -m pmtdeconv area --dataset na22 --runs 65213 \
-    --cosine-cutoff-mhz 250 --sat-thresh 920
+    --cosine-cutoff-mhz 250
 
 # Resolve flags + write manifest, skip ROOT I/O
 python -m pmtdeconv hits --dataset na22 --runs 65213 --dry-run
@@ -541,9 +544,9 @@ python -m pmtdeconv tune stft --dataset na22
 #    as an auto-generated ConfigPreset; idempotent across re-runs.
 python -m pmtdeconv tune cosine --dataset na22 --denoiser none --write-presets
 
-# 5. Use a written preset.
+# 5. Use a written preset (the stable `-latest-` alias tracks the newest winner).
 python -m pmtdeconv area --dataset na22 --runs 65213 \
-    --preset na22-cosine-tuned-2026-05-29-level3
+    --preset na22-cosine-tuned-latest-level3
 
 # 6. Narrow grid for fast iteration:
 python -m pmtdeconv tune wavelet --dataset na22 --regimes level3 \
@@ -587,11 +590,11 @@ identity of all existing golden CSVs is preserved.
 
 | Dataset | Format | Subcommands |
 |---------|--------|-------------|
-| `na22`, `cd109`, `milliqan`, `lanl_806` | flat (`flattened_*.root`) | `template`, `pulse`, `waveform`, `raw_area {mqana, drs}`, `timewalk`, `plot` |
-| `lanl_835`, `lanl_movedBar` | object (`*_triple.root`) + offline pulse list (`*_triple_offline.root`) | `template`, `pulse`, `waveform`, `raw_area {mqana, offline}`, `timewalk`, `plot` |
+| `na22`, `na22_3ch`, `cd109`, `milliqan`, `lanl_806` | flat (`flattened_*.root`) | `template`, `hits`, `area`, `raw-area {mqana, drs}`, `timewalk`, `plot` |
+| `lanl_835`, `lanl_movedBar` | object (`*_triple.root`) + offline pulse list (`*_triple_offline.root`) | `template`, `hits`, `area`, `raw-area {mqana, offline}`, `timewalk`, `plot` |
 
-`raw_area drs` is N/A on object-format datasets (LANL files have no precomputed
-`area_<board>_<ch>` branches) — use `raw_area offline` instead. The CLI hard-fails
+`raw-area drs` is N/A on object-format datasets (LANL files have no precomputed
+`area_<board>_<ch>` branches) — use `raw-area offline` instead. The CLI hard-fails
 with the right pointer if you forget.
 
 ### Output directory layout
