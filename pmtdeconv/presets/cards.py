@@ -110,6 +110,8 @@ def _field_overrides(raw: dict, card_dir: Path) -> dict:
         ov["pmt_type"] = raw["pmt_type"]
     if "hv_volts" in raw:
         ov["hv_volts"] = raw["hv_volts"]
+    if "fom" in raw:
+        ov["fom"] = raw["fom"]
     return ov
 
 

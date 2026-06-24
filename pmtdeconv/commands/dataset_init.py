@@ -23,6 +23,7 @@ polarity: 1                    # +1 positive-going, -1 negative-going
 cosine_cutoff_mhz: 100
 # template: spe_template.csv   # per-tube SPE calibration CSV (optional)
 spe_band: [5, 30]              # SPE amplitude band [lo, hi] in mV (template build)
+# fom: photopeak_sigma_over_mu # figure of merit `validate`/`tune` report
 # pmt_type: milliqan_lab
 # hv_volts: {{d0_ch1: 1500, d0_ch2: 1500}}
 # settings:                    # analysis overrides (subsumes a config preset)

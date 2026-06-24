@@ -85,6 +85,8 @@ SUBCOMMANDS = {
         "init": "dataset_init",
         "lint": "dataset_lint",
     },
+    # S6: comparative figure-of-merit report (deconv vs raw vs DRS).
+    "validate": {None: "validate"},
 }
 
 
@@ -128,6 +130,7 @@ LEAF_HELP = {
     ("vetoes",   "calibrate"): "Derive a data-driven veto profile from raw waveforms.",
     ("dataset",  "init"):      "Scaffold a YAML dataset card (no Python edit).",
     ("dataset",  "lint"):      "Validate a dataset card's fields + settings block.",
+    ("validate", None):        "Comparative FoM report: deconv vs raw vs DRS (no gate).",
 }
 
 

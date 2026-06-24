@@ -62,6 +62,12 @@ def run(args: argparse.Namespace) -> int:
         if key not in valid:
             errors.append(f"settings: unknown Settings field {key!r}")
 
+    if ds.fom is not None:
+        from pmtdeconv.fom import FOMS
+        if ds.fom not in FOMS:
+            errors.append(
+                f"fom {ds.fom!r} is not a known FoM ({', '.join(FOMS)})")
+
     name = ds.name
     for w in warnings:
         print(f"WARN  [{name}] {w}")

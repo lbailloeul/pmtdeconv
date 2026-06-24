@@ -134,6 +134,11 @@ class DatasetPreset:
     # user decision: shape-table only). Both default to None (unknown).
     pmt_type: Optional[str] = None
     hv_volts: Optional[Dict[str, float]] = None
+    # S6: the figure of merit this dataset is judged on (a name in
+    # pmtdeconv.fom.FOMS, e.g. "photopeak_sigma_over_mu"). `validate` and the
+    # real-data `tune` report/optimize THIS expert-chosen number; the tool never
+    # picks it. None = no declared FoM (validate then needs --fom).
+    fom: Optional[str] = None
 
 
 DATASETS: Dict[str, DatasetPreset] = {
