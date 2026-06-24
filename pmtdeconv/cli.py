@@ -75,6 +75,7 @@ SUBCOMMANDS = {
         "wavelet":  "tune_wavelet",
         "stft":     "tune_stft",
         "denoiser": "tune_denoiser",
+        "fom":      "tune_fom",
     },
     # Step 5: derive a data-driven veto profile from a run's raw waveforms.
     "vetoes": {
@@ -127,6 +128,7 @@ LEAF_HELP = {
     ("tune",     "wavelet"):   "Sweep wavelet config per regime, score vs truth.",
     ("tune",     "stft"):      "Sweep STFT denoiser per regime, score vs truth.",
     ("tune",     "denoiser"):  "STFT-vs-wavelet verdict: per-pulse FWHM vs cutoff, 5 configs.",
+    ("tune",     "fom"):       "Sweep cutoff on REAL data vs the card FoM (+anti-cheat).",
     ("vetoes",   "calibrate"): "Derive a data-driven veto profile from raw waveforms.",
     ("dataset",  "init"):      "Scaffold a YAML dataset card (no Python edit).",
     ("dataset",  "lint"):      "Validate a dataset card's fields + settings block.",
