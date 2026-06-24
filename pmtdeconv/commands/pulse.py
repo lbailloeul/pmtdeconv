@@ -208,6 +208,8 @@ def _run_stft(settings, provenance, t0, detector, diag_events) -> int:
 def run(args: argparse.Namespace) -> int:
     t0 = time.time()
     settings, provenance = resolve_settings(args)
+    from pmtdeconv.io.banner import print_run_banner
+    print_run_banner("hits", settings, provenance)
     diag_events = list(getattr(args, "diagnostic_events", None) or [])
 
     # Single resolution point: Settings -> Detector (kills _build_legacy_args).

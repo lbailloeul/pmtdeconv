@@ -48,6 +48,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def run(args: argparse.Namespace) -> int:
     t0 = time.time()
     settings, provenance = resolve_settings(args)
+    from pmtdeconv.io.banner import print_run_banner
+    print_run_banner("area", settings, provenance)
 
     # process_run + FALLBACK_TEMPLATE now live in the neutral pipeline
     # module (PR 2 / decision 9). process_run_object handles LANL
