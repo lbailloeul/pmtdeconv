@@ -142,5 +142,36 @@ def test_card_shadow_recorded_in_provenance(tmp_path, monkeypatch):
     assert prov["cosine_cutoff_mhz"] == "card"
 
 
+# ─── S3: card `base:` inheritance ───────────────────────────────────
+
+def test_card_base_inheritance(tmp_path):
+    """A card with `base: na22` inherits the seed's fields and overrides only
+    what it sets."""
+    seed = get_dataset("na22")
+    p = tmp_path / "na22_variant.yaml"
+    p.write_text(yaml.safe_dump(
+        {"base": "na22", "cosine_cutoff_mhz": 111.0, "notes": "derived"}))
+    ds = resolve_dataset(str(p))
+    assert ds.cosine_cutoff_mhz == 111.0                 # overridden
+    assert ds.dt_ns == seed.dt_ns                        # inherited
+    assert ds.polarity == seed.polarity                  # inherited
+    assert ds.branch_pattern == seed.branch_pattern      # inherited
+    assert Path(ds.default_template_csv) == Path(seed.default_template_csv)
+    assert ds.name == "na22_variant"                     # card's own name
+    assert ds.notes == "derived"
+
+
+def test_card_base_chain(tmp_path):
+    """base may itself be a card (relative path), so inheritance chains."""
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(
+        {"base": "na22", "cosine_cutoff_mhz": 111.0}))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(
+        {"base": "./a.yaml", "polarity": -1}))
+    ds = resolve_dataset(str(tmp_path / "b.yaml"))
+    assert ds.polarity == -1                              # b's override
+    assert ds.cosine_cutoff_mhz == 111.0                 # from a (base)
+    assert ds.dt_ns == get_dataset("na22").dt_ns         # from na22 (grandbase)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

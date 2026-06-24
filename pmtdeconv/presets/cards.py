@@ -57,12 +57,83 @@ def is_card_reference(value) -> bool:
     return Path(s).expanduser().exists()
 
 
+def _field_overrides(raw: dict, card_dir: Path) -> dict:
+    """Map the card keys PRESENT in ``raw`` to ``DatasetPreset`` field kwargs.
+
+    Only keys the card actually sets are returned, so a card with ``base:`` can
+    be applied as a sparse override (via :func:`dataclasses.replace`) and inherit
+    everything else from the base. ``data_dir`` / template paths resolve against
+    the card directory.
+    """
+    def _resolve(p) -> Optional[Path]:
+        if p in (None, ""):
+            return None
+        pp = Path(str(p)).expanduser()
+        return pp if pp.is_absolute() else (card_dir / pp)
+
+    ov: dict = {}
+    if "name" in raw:
+        ov["name"] = str(raw["name"])
+    if "data_dir" in raw:
+        ov["data_dir"] = Path(_resolve(raw["data_dir"]))
+    if "file_glob" in raw:
+        ov["file_glob"] = raw["file_glob"]
+    if "exclude_glob" in raw:
+        ov["exclude_glob"] = raw["exclude_glob"]
+    if "format" in raw:
+        ov["format"] = raw["format"]
+    if "tree" in raw:
+        ov["tree"] = raw["tree"]
+    if "branches" in raw:
+        ov["branch_pattern"] = raw["branches"]
+    if "dt_ns" in raw:
+        ov["dt_ns"] = (raw["dt_ns"] if raw["dt_ns"] == "auto"
+                       else float(raw["dt_ns"]))
+    if "polarity" in raw:
+        ov["polarity"] = int(raw["polarity"])
+    if "cosine_cutoff_mhz" in raw:
+        ov["cosine_cutoff_mhz"] = float(raw["cosine_cutoff_mhz"])
+    if "template" in raw:
+        ov["default_template_csv"] = _resolve(raw["template"])
+    if "template_na22fmt" in raw:
+        ov["default_template_csv_na22fmt"] = _resolve(raw["template_na22fmt"])
+    if "spe_band" in raw:
+        s = raw["spe_band"]
+        ov["spe_band_mv"] = (float(s[0]), float(s[1]))
+    if "notes" in raw:
+        ov["notes"] = raw["notes"]
+    if "offline_data_dir" in raw:
+        ov["offline_data_dir"] = _resolve(raw["offline_data_dir"])
+    if "offline_file_glob" in raw:
+        ov["offline_file_glob"] = raw["offline_file_glob"]
+    if "pmt_type" in raw:
+        ov["pmt_type"] = raw["pmt_type"]
+    if "hv_volts" in raw:
+        ov["hv_volts"] = raw["hv_volts"]
+    return ov
+
+
+def _resolve_base(base_ref, card_dir: Path) -> DatasetPreset:
+    """Resolve a card's ``base:`` to a DatasetPreset. The base may be a registry
+    name, a registry card name, or a card path (relative paths resolve against
+    the referring card). Recurses through :func:`resolve_dataset`, so a base card
+    can itself have a base."""
+    from pmtdeconv.presets.datasets import resolve_dataset
+    s = str(base_ref)
+    if (not Path(s).is_absolute()
+            and (s.endswith((".yaml", ".yml")) or "/" in s or os.sep in s)):
+        s = str(card_dir / s)
+    return resolve_dataset(s)
+
+
 def load_card(path) -> DatasetPreset:
     """Load a YAML dataset card into a :class:`DatasetPreset`.
 
     ``path`` may be the card file, or a directory holding ``dataset.yaml`` /
-    ``dataset.yml``. Relative ``data_dir`` / ``template`` paths resolve against
-    the card file's directory; ``data_dir`` defaults to that directory.
+    ``dataset.yml``. With ``base: <name|card>`` the card INHERITS that base's
+    fields and overrides only the keys it sets (the inheritance primitive);
+    without ``base:`` it builds from the per-field defaults. Relative
+    ``data_dir`` / ``template`` paths resolve against the card's directory.
     """
     path = Path(path).expanduser()
     if path.is_dir():
@@ -83,34 +154,26 @@ def load_card(path) -> DatasetPreset:
             f"dataset card {path} must be a YAML mapping, got {type(raw).__name__}")
 
     card_dir = path.parent
+    overrides = _field_overrides(raw, card_dir)
 
-    def _resolve(p) -> Optional[Path]:
-        if p in (None, ""):
-            return None
-        pp = Path(str(p)).expanduser()
-        return pp if pp.is_absolute() else (card_dir / pp)
+    if "base" in raw and raw["base"] is not None:
+        base = _resolve_base(raw["base"], card_dir)
+        # The card's name defaults to its own file stem (not the base's) so a
+        # derived card is identifiable; data_dir + everything else inherit
+        # unless the card overrides them.
+        overrides.setdefault("name", path.stem)
+        import dataclasses
+        return dataclasses.replace(base, **overrides)
 
-    dt_ns = raw.get("dt_ns", _DEFAULTS["dt_ns"])
-    spe = raw.get("spe_band", _DEFAULTS["spe_band_mv"])
-
-    return DatasetPreset(
-        name=str(raw.get("name") or path.stem),
-        data_dir=Path(_resolve(raw.get("data_dir")) or card_dir),
-        file_glob=raw.get("file_glob", _DEFAULTS["file_glob"]),
-        exclude_glob=raw.get("exclude_glob", _DEFAULTS["exclude_glob"]),
-        format=raw.get("format", _DEFAULTS["format"]),
-        tree=raw.get("tree", _DEFAULTS["tree"]),
-        branch_pattern=raw.get("branches", _DEFAULTS["branch_pattern"]),
-        dt_ns=(dt_ns if dt_ns == "auto" else float(dt_ns)),
-        polarity=int(raw.get("polarity", _DEFAULTS["polarity"])),
-        cosine_cutoff_mhz=float(
-            raw.get("cosine_cutoff_mhz", _DEFAULTS["cosine_cutoff_mhz"])),
-        default_template_csv=_resolve(raw.get("template")),
-        spe_band_mv=(float(spe[0]), float(spe[1])),
-        notes=raw.get("notes", ""),
-        default_template_csv_na22fmt=_resolve(raw.get("template_na22fmt")),
-        offline_data_dir=_resolve(raw.get("offline_data_dir")),
-        offline_file_glob=raw.get("offline_file_glob"),
-        pmt_type=raw.get("pmt_type"),
-        hv_volts=raw.get("hv_volts"),
+    # No base → full preset from defaults + the card's fields.
+    full = dict(
+        name=path.stem, data_dir=card_dir,
+        file_glob=_DEFAULTS["file_glob"], exclude_glob=_DEFAULTS["exclude_glob"],
+        format=_DEFAULTS["format"], tree=_DEFAULTS["tree"],
+        branch_pattern=_DEFAULTS["branch_pattern"], dt_ns=_DEFAULTS["dt_ns"],
+        polarity=_DEFAULTS["polarity"],
+        cosine_cutoff_mhz=_DEFAULTS["cosine_cutoff_mhz"],
+        default_template_csv=None, spe_band_mv=_DEFAULTS["spe_band_mv"],
     )
+    full.update(overrides)
+    return DatasetPreset(**full)
