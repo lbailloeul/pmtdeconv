@@ -246,17 +246,26 @@ deterministic synthetic-ROOT fixtures (3 flat + 3 object + 2 offline = 8 goldens
 ```
 pmtdeconv
 ├── run {na22-timewalk, na22-energy, build-template} complete workflows
+├── dataset  {init, lint}                          scaffold + validate a dataset CARD
 ├── template {build, aggregate}                 SPE template stacking
 ├── hits                                       per-hit deconvolution
 ├── area                                       whole-waveform deconvolution summary
 ├── raw-area {mqana, drs, offline}              raw-waveform area sources
+├── validate                                   comparative FoM report (deconv vs raw vs DRS)
 ├── timewalk {run, gif}                         Δt scan + animation
 ├── plot     {marginals, energy, analyze}       diagnostic plots
 ├── info     {datasets, presets, template, offline-file, artifacts}
 ├── config   {show, resolve}                     configuration inspection
 ├── results  {list, show, path}                  output discovery
-└── tune     {cosine, wavelet, stft}            regime-driven parameter sweeps
+├── tune     {cosine, wavelet, stft, denoiser, fom}  sweeps (synthetic truth + real-data fom)
+└── vetoes   {calibrate}                         data-driven veto profile
 ```
+
+**`--dataset` takes a registry name OR a path to a YAML card** (or a directory
+with `dataset.yaml`). A new detector is onboarded with a card — no Python edit —
+and a card under `<data_root>/calibrations/datasets/<name>.yaml` *shadows* the
+in-code seed of the same name (flagged as `[card]` in the run banner + manifest).
+See **Onboarding a new detector** below.
 
 `tune` runs deterministic sweeps against the seeded
 synthetic regime fixtures (`level1`..`level5`, from low SNR to
@@ -271,6 +280,7 @@ can pick up via `--preset` with no runtime branching.
 | I want… | Use |
 |---------|-----|
 | run the standard Na22 workflow | `run na22-timewalk` |
+| **onboard a new detector** (no Python edit) | `dataset init <name>` → edit the card → `dataset lint <card>` |
 | build / refit SPE templates | `template build`, `template aggregate` |
 | per-trigger whole-waveform deconvolution **summary** | `area` |
 | per-event peak-finding **hits with timing** | `hits` (wavelet) or `hits --denoiser stft` |
@@ -284,23 +294,106 @@ can pick up via `--preset` with no runtime branching.
 | inspect a registry, file, or output index | `info {datasets, presets, template, offline-file, artifacts}` |
 | inspect resolved settings | `config show`, `config resolve` |
 | find a previous output | `results list`, `results show`, `results path` |
-| **find best cosine cutoff per regime** | `tune cosine` (use `--denoiser none` to isolate the cosine response) |
+| **compare deconv vs raw vs DRS on my FoM** | `validate` (per-channel σ/μ table; report, not a gate) |
+| **find best cosine cutoff per regime** (synthetic truth) | `tune cosine` (use `--denoiser none` to isolate the cosine response) |
+| **find best cutoff on REAL data vs my FoM** | `tune fom` (+ anti-cheat columns; `--auto-select` to pick) |
 | **find best wavelet config per regime** | `tune wavelet` (use `--cosine-cutoff-mhz <N>` to pick the fixed cutoff) |
 | **find best STFT config per regime** | `tune stft` |
+| **derive a data-driven veto profile** | `vetoes calibrate --write-profile <name>` (persists to the calibrations catalog) |
 | **dump intermediates for one or more events** (FFT, denoised, peaks, truth match, PDF) | `hits --diagnostic-events <N> [N …]` |
 
-### Settings layering: `--dataset` → `--preset` → CLI flag
+### Settings layering: dataset/card → config → CLI flag
 
 ```text
-dataset default  <  named config preset  <  explicit CLI flag
+dataset (seed or CARD)  <  config overrides  <  explicit CLI flag
+```
+
+`--dataset` accepts a **registry name**, a **config-preset name** (so
+`--dataset na22-timewalk` ≡ `--preset na22-timewalk`), or a **card path/dir**.
+A card can carry analysis overrides in a `settings:` block, so a single card
+expresses everything a dataset + config preset used to. Every run prints a
+**provenance banner** (and writes it to the manifest) showing each resolved knob
+and *where it came from* (`[card]`/`[dataset]`/`[config]`/`[cli]`):
+
+```text
+┌─ pmtdeconv area
+│  dataset       na22            [card]
+│  cutoff [MHz]  123.0           [card]
+│  denoiser      wavelet         [config]
+│  fom           photopeak_sigma_over_mu   [card]
+└─ pmtdeconv 0.x  git abc12345@leo-waveform-reco
 ```
 
 ```bash
-python -m pmtdeconv info datasets        # list 6 datasets + applicable subcommands
+python -m pmtdeconv info datasets        # list datasets + applicable subcommands
 python -m pmtdeconv config show na22-timewalk
 python -m pmtdeconv config resolve --preset na22-timewalk
 python -m pmtdeconv <command> --help     # command flag reference
 ```
+
+### Onboarding a new detector with a card
+
+A dataset **card** is a YAML file describing a detector — the file-backed twin
+of the in-code presets. No Python edit is needed:
+
+```bash
+python -m pmtdeconv dataset init mydet --out mydet.yaml   # scaffold (or --base na22)
+$EDITOR mydet.yaml                                         # fill in the specifics
+python -m pmtdeconv dataset lint mydet.yaml               # validate fields + settings
+python -m pmtdeconv area --dataset ./mydet.yaml --runs 42 # run it (path form)
+```
+
+Drop the card at `<data_root>/calibrations/datasets/mydet.yaml` and it resolves
+by **name** (`--dataset mydet`) and *shadows* a same-named seed. Card fields:
+
+```yaml
+name: mydet
+base: na22                 # optional: inherit a seed/card, override only what differs
+data_dir: .                # dir with the ROOT files (default: the card's dir)
+file_glob: "flattened_Run*.root"
+format: flat               # flat | object
+tree: waveforms
+branches: [d0_ch1, d0_ch2] # explicit list, or "auto" to discover d0_ch*
+dt_ns: 0.5051              # sample spacing [ns], or "auto" (object format)
+polarity: 1                # +1 positive-going, -1 negative-going
+cosine_cutoff_mhz: 100
+spe_band: [5, 30]          # SPE amplitude band [lo, hi] in mV (template build)
+fom: photopeak_sigma_over_mu          # figure of merit validate/tune report
+template: spe_template.csv            # one shared SPE template, OR ...
+templates:                            # ... per-tube templates, one CSV per channel
+  d0_ch1: tubes/ch1_spe.csv
+  d0_ch2: tubes/ch2_spe.csv
+settings:                  # analysis overrides (subsumes a config preset)
+  denoiser: wavelet
+  wthresh_k: 2.0
+  no_vetoes: false
+```
+
+File-backed catalogs live under `<data_root>/calibrations/` (`datasets/` for
+cards, `veto_profiles/` for versioned veto profiles written by
+`vetoes calibrate --write-profile`).
+
+### Comparing methods + tuning on real data
+
+```bash
+# Compare deconv vs raw vs DRS on the card's FoM (a report, never a gate):
+python -m pmtdeconv validate --dataset ./mydet.yaml \
+    --deconv-csv out/deconv/areas_run42.csv \
+    --raw-csv    out/raw/area_mqana_run42.csv
+
+# Sweep the cosine cutoff on REAL data vs the FoM, with anti-cheat columns
+# (efficiency + charge drift) so a "win" by dropping events / shifting scale
+# is visible; --auto-select opts in to picking a winner per channel:
+python -m pmtdeconv tune fom --dataset ./mydet.yaml --runs 42 \
+    --cutoff-range 50 300 25 --window 4000 6000 --auto-select
+```
+
+### Saturation handling
+
+Saturation is detected from the **flat plateau** at the rail (universal — no
+per-detector threshold). Saturated waveforms are **kept and flagged**
+(`saturated` column) rather than dropped, so timing survives; isolate them in the
+energy spectra with `plot energy --exclude-saturated`.
 
 ### Worked example 1 — Na22 timewalk (the 2026-05 settled config)
 
