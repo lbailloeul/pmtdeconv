@@ -97,5 +97,50 @@ def test_card_area_byte_identical_to_seed(tmp_path):
         "card-driven area CSV is not byte-identical to the seed's"
 
 
+# ─── S2: name-based discovery + seed shadowing + provenance ─────────
+
+def _write_registry_card(tmp_path: Path, name: str, cutoff: float) -> Path:
+    """Drop <tmp>/calibrations/datasets/<name>.yaml shadowing a seed."""
+    calib = tmp_path / "calibrations" / "datasets"
+    calib.mkdir(parents=True, exist_ok=True)
+    seed = get_dataset(name)
+    card = {
+        "name": name, "data_dir": str(FIXTURE_DIR), "format": seed.format,
+        "tree": seed.tree, "branches": list(seed.branch_pattern),
+        "dt_ns": seed.dt_ns, "polarity": seed.polarity,
+        "cosine_cutoff_mhz": cutoff, "spe_band": list(seed.spe_band_mv),
+    }
+    p = calib / f"{name}.yaml"
+    p.write_text(yaml.safe_dump(card))
+    return p
+
+
+def test_registry_card_shadows_seed(tmp_path, monkeypatch):
+    from pmtdeconv.presets.datasets import resolve_dataset_with_source
+    seed = get_dataset("na22")
+    _write_registry_card(tmp_path, "na22", cutoff=123.0)  # != seed's 450
+    monkeypatch.setenv("PMTDECONV_DATA_ROOT", str(tmp_path))
+    ds, src = resolve_dataset_with_source("na22")
+    assert src == "card"
+    assert ds.cosine_cutoff_mhz == 123.0          # card value, not seed's
+    # Without the calibrations dir, the in-code seed resolves normally.
+    monkeypatch.delenv("PMTDECONV_DATA_ROOT")
+    ds2, src2 = resolve_dataset_with_source("na22")
+    assert src2 == "dataset"
+    assert ds2.cosine_cutoff_mhz == seed.cosine_cutoff_mhz
+
+
+def test_card_shadow_recorded_in_provenance(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from pmtdeconv.presets import resolve_settings
+    _write_registry_card(tmp_path, "na22", cutoff=123.0)
+    monkeypatch.setenv("PMTDECONV_DATA_ROOT", str(tmp_path))
+    settings, prov = resolve_settings(SimpleNamespace(dataset="na22"),
+                                      require_data_root=False)
+    assert prov["dataset"] == "card"
+    assert settings.cosine_cutoff_mhz == 123.0
+    assert prov["cosine_cutoff_mhz"] == "card"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

@@ -293,16 +293,40 @@ def get_dataset(name: str) -> DatasetPreset:
     return DATASETS[name]
 
 
-def resolve_dataset(name_or_path: str) -> DatasetPreset:
-    """Resolve a ``--dataset`` value to a :class:`DatasetPreset`.
+def _registry_card_path(name: str) -> Optional[Path]:
+    """Return the file-backed card for ``name`` under
+    ``<data_root>/calibrations/datasets/<name>.{yaml,yml}`` if present, else None.
 
-    A card *path* (``./run.yaml``, a dir with ``dataset.yaml``, or any existing
-    path) is loaded via :func:`pmtdeconv.presets.cards.load_card`; otherwise the
-    value is a registry *name* resolved by :func:`get_dataset`. (S2 will insert
-    name-based card discovery under ``<data_root>/calibrations/datasets/`` before
-    the in-code registry.)
+    Resolved FRESH via :func:`_resolve_data_root` (honors ``PMTDECONV_DATA_ROOT``)
+    so a shared calibrations directory can shadow the in-code seeds without a
+    re-import.
+    """
+    base = _resolve_data_root() / "calibrations" / "datasets"
+    for ext in (".yaml", ".yml"):
+        cand = base / f"{name}{ext}"
+        if cand.exists():
+            return cand
+    return None
+
+
+def resolve_dataset_with_source(name_or_path: str) -> Tuple[DatasetPreset, str]:
+    """Resolve a ``--dataset`` value to ``(DatasetPreset, source)``.
+
+    ``source`` is ``"card"`` (a YAML card — supplied by path, or a registry card
+    shadowing a same-named seed) or ``"dataset"`` (an in-code seed). Resolution
+    order: card PATH → registry card (shadows seed) → in-code seed. The source
+    is recorded in the manifest provenance so a shadowing card is never silent.
     """
     from pmtdeconv.presets.cards import is_card_reference, load_card
     if is_card_reference(name_or_path):
-        return load_card(name_or_path)
-    return get_dataset(name_or_path)
+        return load_card(name_or_path), "card"
+    card = _registry_card_path(name_or_path)
+    if card is not None:
+        return load_card(card), "card"
+    return get_dataset(name_or_path), "dataset"
+
+
+def resolve_dataset(name_or_path: str) -> DatasetPreset:
+    """Resolve a ``--dataset`` value to a :class:`DatasetPreset` (card path,
+    registry card, or in-code seed). See :func:`resolve_dataset_with_source`."""
+    return resolve_dataset_with_source(name_or_path)[0]

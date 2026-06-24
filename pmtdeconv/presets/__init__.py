@@ -24,6 +24,7 @@ from pmtdeconv.presets.datasets import (
     DatasetPreset,
     get_dataset,
     resolve_dataset,
+    resolve_dataset_with_source,
 )
 # Merge auto-generated tuned presets (PR 10) into CONFIGS so the
 # resolver, info presets, and `--preset <name>` all see them
@@ -171,22 +172,26 @@ def _set(settings: Settings, provenance: Dict[str, str],
 
 
 def _apply_dataset(settings: Settings, provenance: Dict[str, str],
-                   ds: DatasetPreset) -> None:
-    """Copy every DatasetPreset field onto the Settings."""
+                   ds: DatasetPreset, source: str = "dataset") -> None:
+    """Copy every DatasetPreset field onto the Settings.
+
+    ``source`` records HOW the dataset was resolved ("dataset" = in-code seed,
+    "card" = a YAML card shadowing/replacing it) so the manifest provenance
+    flags a card-sourced run."""
     settings.dataset = ds.name
-    provenance["dataset"] = "dataset"
+    provenance["dataset"] = source
     for f in fields(ds):
         name = f.name
         # DatasetPreset uses `data_dir` -> Settings uses `data_root`
         target = "data_root" if name == "data_dir" else name
         if not hasattr(settings, target):
             continue
-        _set(settings, provenance, target, getattr(ds, name), "dataset")
+        _set(settings, provenance, target, getattr(ds, name), source)
     # The dataset's recommended template lives in default_template_csv
     # AND becomes the resolved template_csv unless overridden later.
     if ds.default_template_csv is not None:
         _set(settings, provenance, "template_csv",
-             ds.default_template_csv, "dataset")
+             ds.default_template_csv, source)
 
 
 def _apply_config(settings: Settings, provenance: Dict[str, str],
@@ -250,14 +255,16 @@ def resolve_settings(args: argparse.Namespace,
 
     dataset_name = getattr(args, "dataset", None)
     if dataset_name is not None:
-        _apply_dataset(settings, provenance, resolve_dataset(dataset_name))
+        ds, src = resolve_dataset_with_source(dataset_name)
+        _apply_dataset(settings, provenance, ds, src)
 
     preset_name = getattr(args, "preset", None)
     if preset_name is not None:
         cfg = get_config(preset_name)
         if dataset_name is None:
             # If user didn't pick a dataset, fall back to the preset's base
-            _apply_dataset(settings, provenance, get_dataset(cfg.base_dataset))
+            ds, src = resolve_dataset_with_source(cfg.base_dataset)
+            _apply_dataset(settings, provenance, ds, src)
         _apply_config(settings, provenance, cfg)
 
     _apply_cli(settings, provenance, args)
