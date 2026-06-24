@@ -309,21 +309,26 @@ def _registry_card_path(name: str) -> Optional[Path]:
     return None
 
 
-def resolve_dataset_with_source(name_or_path: str) -> Tuple[DatasetPreset, str]:
-    """Resolve a ``--dataset`` value to ``(DatasetPreset, source)``.
+def resolve_dataset_with_source(
+        name_or_path: str) -> Tuple[DatasetPreset, str, dict]:
+    """Resolve a ``--dataset`` value to ``(DatasetPreset, source, overrides)``.
 
     ``source`` is ``"card"`` (a YAML card — supplied by path, or a registry card
     shadowing a same-named seed) or ``"dataset"`` (an in-code seed). Resolution
-    order: card PATH → registry card (shadows seed) → in-code seed. The source
-    is recorded in the manifest provenance so a shadowing card is never silent.
+    order: card PATH → registry card (shadows seed) → in-code seed. ``overrides``
+    is the card's ``settings:`` block (analysis-knob Settings overrides, so a
+    card can subsume a config preset); ``{}`` for an in-code seed. The source is
+    recorded in the manifest provenance so a shadowing card is never silent.
     """
-    from pmtdeconv.presets.cards import is_card_reference, load_card
+    from pmtdeconv.presets.cards import (
+        is_card_reference, load_card, read_card_settings)
     if is_card_reference(name_or_path):
-        return load_card(name_or_path), "card"
+        return (load_card(name_or_path), "card",
+                read_card_settings(name_or_path))
     card = _registry_card_path(name_or_path)
     if card is not None:
-        return load_card(card), "card"
-    return get_dataset(name_or_path), "dataset"
+        return load_card(card), "card", read_card_settings(card)
+    return get_dataset(name_or_path), "dataset", {}
 
 
 def resolve_dataset(name_or_path: str) -> DatasetPreset:

@@ -120,12 +120,12 @@ def test_registry_card_shadows_seed(tmp_path, monkeypatch):
     seed = get_dataset("na22")
     _write_registry_card(tmp_path, "na22", cutoff=123.0)  # != seed's 450
     monkeypatch.setenv("PMTDECONV_DATA_ROOT", str(tmp_path))
-    ds, src = resolve_dataset_with_source("na22")
+    ds, src, _ov = resolve_dataset_with_source("na22")
     assert src == "card"
     assert ds.cosine_cutoff_mhz == 123.0          # card value, not seed's
     # Without the calibrations dir, the in-code seed resolves normally.
     monkeypatch.delenv("PMTDECONV_DATA_ROOT")
-    ds2, src2 = resolve_dataset_with_source("na22")
+    ds2, src2, _ov2 = resolve_dataset_with_source("na22")
     assert src2 == "dataset"
     assert ds2.cosine_cutoff_mhz == seed.cosine_cutoff_mhz
 
@@ -171,6 +171,39 @@ def test_card_base_chain(tmp_path):
     assert ds.polarity == -1                              # b's override
     assert ds.cosine_cutoff_mhz == 111.0                 # from a (base)
     assert ds.dt_ns == get_dataset("na22").dt_ns         # from na22 (grandbase)
+
+
+# ─── S3 collapse: card settings: block + --dataset resolves config names ──
+
+def test_card_settings_block_subsumes_config(tmp_path):
+    """A card `base:` + `settings:` carries analysis overrides like a config
+    preset — applied to Settings with provenance 'card'."""
+    from types import SimpleNamespace
+    from pmtdeconv.presets import resolve_settings
+    p = tmp_path / "na22_tw.yaml"
+    p.write_text(yaml.safe_dump(
+        {"base": "na22", "settings": {"wthresh_k": 2.5, "no_vetoes": True}}))
+    s, prov = resolve_settings(SimpleNamespace(dataset=str(p)),
+                               require_data_root=False)
+    assert s.wthresh_k == 2.5 and s.no_vetoes is True
+    assert prov["wthresh_k"] == "card" and prov["no_vetoes"] == "card"
+    assert s.cosine_cutoff_mhz == get_dataset("na22").cosine_cutoff_mhz  # inherited
+
+
+def test_dataset_resolves_config_preset_name():
+    """--dataset <config-name> == --preset <config-name> (collapsed entry)."""
+    from types import SimpleNamespace
+    from pmtdeconv.presets import resolve_settings
+    from pmtdeconv.presets.configs import CONFIGS
+    name = "na22-timewalk-winning-2026-05"
+    assert name in CONFIGS
+    s_ds, _ = resolve_settings(SimpleNamespace(dataset=name),
+                               require_data_root=False)
+    s_pre, _ = resolve_settings(SimpleNamespace(preset=name),
+                                require_data_root=False)
+    for f in ("cosine_cutoff_mhz", "wthresh_k", "no_vetoes", "denoiser",
+              "wavelet", "wlevel", "wmode"):
+        assert getattr(s_ds, f) == getattr(s_pre, f), f
 
 
 if __name__ == "__main__":

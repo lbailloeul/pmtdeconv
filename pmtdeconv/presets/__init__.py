@@ -194,17 +194,26 @@ def _apply_dataset(settings: Settings, provenance: Dict[str, str],
              ds.default_template_csv, source)
 
 
+def _apply_overrides(settings: Settings, provenance: Dict[str, str],
+                     overrides: Dict[str, Any], source: str,
+                     where: str = "override") -> None:
+    """Apply a dict of Settings-field overrides (analysis knobs). Shared by
+    config presets (``source="config"``) and a card's ``settings:`` block
+    (``source="card"``)."""
+    for field_name, value in overrides.items():
+        if not hasattr(settings, field_name):
+            raise KeyError(
+                f"{where} sets unknown Settings field {field_name!r}.")
+        _set(settings, provenance, field_name, value, source)
+
+
 def _apply_config(settings: Settings, provenance: Dict[str, str],
                   cfg: ConfigPreset) -> None:
     """Apply a named config preset's overrides on top of the dataset."""
     settings.config_preset_name = cfg.name
     provenance["config_preset_name"] = "config"
-    for field_name, value in cfg.overrides.items():
-        if not hasattr(settings, field_name):
-            raise KeyError(
-                f"ConfigPreset {cfg.name!r} sets unknown Settings field "
-                f"{field_name!r}. Check pmtdeconv/presets/configs.py.")
-        _set(settings, provenance, field_name, value, "config")
+    _apply_overrides(settings, provenance, cfg.overrides, "config",
+                     where=f"ConfigPreset {cfg.name!r}")
 
 
 def _apply_cli(settings: Settings, provenance: Dict[str, str],
@@ -255,15 +264,27 @@ def resolve_settings(args: argparse.Namespace,
 
     dataset_name = getattr(args, "dataset", None)
     if dataset_name is not None:
-        ds, src = resolve_dataset_with_source(dataset_name)
-        _apply_dataset(settings, provenance, ds, src)
+        if dataset_name in CONFIGS:
+            # Collapse: --dataset may name a config preset (so --preset X is now
+            # equivalent to --dataset X). Apply its base dataset + overrides.
+            cfg = get_config(dataset_name)
+            ds, src, _ov = resolve_dataset_with_source(cfg.base_dataset)
+            _apply_dataset(settings, provenance, ds, src)
+            _apply_config(settings, provenance, cfg)
+        else:
+            ds, src, overrides = resolve_dataset_with_source(dataset_name)
+            _apply_dataset(settings, provenance, ds, src)
+            # A card's `settings:` block subsumes a config preset's overrides.
+            if overrides:
+                _apply_overrides(settings, provenance, overrides, "card",
+                                 where=f"card {dataset_name!r}")
 
     preset_name = getattr(args, "preset", None)
     if preset_name is not None:
         cfg = get_config(preset_name)
         if dataset_name is None:
             # If user didn't pick a dataset, fall back to the preset's base
-            ds, src = resolve_dataset_with_source(cfg.base_dataset)
+            ds, src, _ov = resolve_dataset_with_source(cfg.base_dataset)
             _apply_dataset(settings, provenance, ds, src)
         _apply_config(settings, provenance, cfg)
 

@@ -126,6 +126,42 @@ def _resolve_base(base_ref, card_dir: Path) -> DatasetPreset:
     return resolve_dataset(s)
 
 
+def _resolve_card_path(path) -> Path:
+    """Resolve ``path`` to a card file: a file directly, or ``dataset.yaml`` /
+    ``dataset.yml`` inside a directory. Raises if not found."""
+    path = Path(path).expanduser()
+    if path.is_dir():
+        for cand in ("dataset.yaml", "dataset.yml"):
+            if (path / cand).exists():
+                return path / cand
+        raise FileNotFoundError(f"no dataset.yaml/.yml in directory {path}")
+    if not path.exists():
+        raise FileNotFoundError(f"dataset card not found: {path}")
+    return path
+
+
+def _read_card_yaml(path) -> tuple[dict, Path]:
+    """Return ``(raw_mapping, card_dir)`` for a card path (file or dir)."""
+    p = _resolve_card_path(path)
+    with open(p) as fh:
+        raw = yaml.safe_load(fh) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"dataset card {p} must be a YAML mapping, got {type(raw).__name__}")
+    return raw, p.parent
+
+
+def read_card_settings(path) -> dict:
+    """Return a card's ``settings:`` block — analysis-knob overrides (Settings
+    fields like ``denoiser`` / ``wthresh_k`` / ``no_vetoes``) that let a card
+    subsume what a config preset did. Empty dict if absent."""
+    raw, _ = _read_card_yaml(path)
+    settings = raw.get("settings") or {}
+    if not isinstance(settings, dict):
+        raise ValueError(f"card {path}: `settings:` must be a mapping")
+    return dict(settings)
+
+
 def load_card(path) -> DatasetPreset:
     """Load a YAML dataset card into a :class:`DatasetPreset`.
 
@@ -134,26 +170,13 @@ def load_card(path) -> DatasetPreset:
     fields and overrides only the keys it sets (the inheritance primitive);
     without ``base:`` it builds from the per-field defaults. Relative
     ``data_dir`` / ``template`` paths resolve against the card's directory.
+
+    The card's ``settings:`` block (analysis overrides) is read separately by
+    :func:`read_card_settings`; it does not affect the returned DatasetPreset
+    (a detector-only object).
     """
-    path = Path(path).expanduser()
-    if path.is_dir():
-        for cand in ("dataset.yaml", "dataset.yml"):
-            if (path / cand).exists():
-                path = path / cand
-                break
-        else:
-            raise FileNotFoundError(
-                f"no dataset.yaml/.yml in directory {path}")
-    if not path.exists():
-        raise FileNotFoundError(f"dataset card not found: {path}")
-
-    with open(path) as fh:
-        raw = yaml.safe_load(fh) or {}
-    if not isinstance(raw, dict):
-        raise ValueError(
-            f"dataset card {path} must be a YAML mapping, got {type(raw).__name__}")
-
-    card_dir = path.parent
+    raw, card_dir = _read_card_yaml(path)
+    path = _resolve_card_path(path)
     overrides = _field_overrides(raw, card_dir)
 
     if "base" in raw and raw["base"] is not None:
