@@ -303,7 +303,9 @@ def run(args: argparse.Namespace) -> int:
     written = None
     if args.write_profile:
         name = args.write_profile
-        derived = replace(derived, name=name)
+        from datetime import date as _date
+        derived = replace(derived, name=name,
+                          version=_date.today().isoformat())
         VETO_PROFILES.save(name, derived)
         detail = (f"target_eff={args.target_eff}, "
                   f"achieved_eff={stats.get('achieved_eff')}, "
@@ -319,8 +321,17 @@ def run(args: argparse.Namespace) -> int:
              "stats": stats}, indent=2))
         written = str(prof_path)
         print(f"\n  wrote profile '{name}' → {prof_path}")
-        print(f"  (session catalog updated; persistent reload is a step-8 "
-              f"follow-up)")
+        # S8: persist to the data-root catalog so later runs resolve it BY NAME
+        # (the formerly-promised persistent backing store). The YAML carries the
+        # version stamp; resolve_veto_profile(name, data_root) shadows builtins.
+        if settings.data_root:
+            from pmtdeconv.presets.veto_profiles import save_veto_profile_yaml
+            yaml_path = save_veto_profile_yaml(derived, settings.data_root)
+            print(f"  persisted to catalog: {yaml_path} "
+                  f"(version {derived.version})")
+        else:
+            print("  (no --data-root: not persisted to a catalog; pass "
+                  "--data-root to grow the on-disk veto catalog)")
 
     manifest_path = (Path(settings.manifest_path)
                      if settings.manifest_path else (out_dir / "manifest.json"))
