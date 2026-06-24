@@ -89,10 +89,24 @@ def load_template(
     df = pd.read_csv(csv_path)
 
     # --- Schema 1: stacked per-channel (Cd109 stacked-fit) -----------
+    # Two on-disk variants both land here (both carry ``tau_rise_ns``):
+    #   (a) Cd109 stacked fit: separate ``det`` column + NUMERIC ``channel``
+    #       (e.g. det="d0", channel=1)  -> branch "d0_ch1".
+    #   (b) ``template aggregate`` output (spe_templates_perchannel.csv):
+    #       ``channel`` is already the FULL branch name "d0_ch1" and there is
+    #       NO ``det`` column. Without (b)'s handling, `hits --template
+    #       <aggregate csv>` died with KeyError('det').
     if "tau_rise_ns" in df.columns:
         ch_col = "channel" if "channel" in df.columns else "chan"
+        has_det = "det" in df.columns
         for _, row in df.iterrows():
-            branch = f"{row['det']}_ch{int(row[ch_col])}"
+            raw = str(row[ch_col])
+            if "ch" in raw:                       # (b) full branch name e.g. "d0_ch1"
+                branch = raw
+            elif has_det and pd.notna(row["det"]):  # (a) Cd109 det + numeric chan
+                branch = f"{row['det']}_ch{int(float(raw))}"
+            else:                                 # bare numeric, no det -> assume d0
+                branch = f"d0_ch{int(float(raw))}"
             templates[branch] = dict(
                 A=fallback_A,
                 tau_rise=float(row["tau_rise_ns"]),
@@ -143,3 +157,37 @@ def load_template(
     raise ValueError(
         f"Cannot interpret template schema in {csv_path}. "
         f"Expected one of: tau_rise_ns / branch+tau_rise / det+chan+tau_rise.")
+
+
+def load_templates_by_channel(
+    mapping: Dict[str, Path], *, strict: bool = True, verbose: bool = True,
+) -> Dict[str, Dict[str, float]]:
+    """Resolve a per-channel CSV mapping ``{branch: csv_path}`` into one
+    ``{branch: template}`` dict — each channel gets the SPE shape from its OWN
+    CSV (the per-tube transferable artifact, S9).
+
+    A per-tube CSV usually holds one channel; we assign its template to the
+    target ``branch`` regardless of the CSV's internal channel key. If a CSV
+    holds several channels, the one whose key matches ``branch`` is used; if it
+    holds several and none match, that is an error (ambiguous — split it).
+    """
+    out: Dict[str, Dict[str, float]] = {}
+    for branch, csv in mapping.items():
+        loaded = load_template(Path(csv), strict=strict, verbose=verbose)
+        if branch in loaded:
+            out[branch] = loaded[branch]
+        elif len(loaded) == 1:
+            out[branch] = next(iter(loaded.values()))
+        elif len(loaded) == 0:
+            if strict:
+                raise TemplateNotFoundError(
+                    f"per-channel template for {branch!r}: no template in {csv}")
+        else:
+            raise ValueError(
+                f"per-channel template {csv} for {branch!r} holds multiple "
+                f"channels {sorted(loaded)} and none is named {branch!r}; "
+                f"split the CSV or rename its channel.")
+    if verbose and out:
+        print(f"Loaded {len(out)} per-channel (per-tube) templates: "
+              f"{', '.join(sorted(out))}")
+    return out

@@ -139,6 +139,11 @@ class DatasetPreset:
     # real-data `tune` report/optimize THIS expert-chosen number; the tool never
     # picks it. None = no declared FoM (validate then needs --fom).
     fom: Optional[str] = None
+    # S9: per-channel SPE templates — {branch: csv_path}. Lets each PMT tube use
+    # its OWN transferable SPE artifact (e.g. d0_ch1 -> tubeA.csv, d0_ch2 ->
+    # tubeB.csv) instead of one shared template. When set it supersedes
+    # default_template_csv for the listed channels. None = single-CSV behavior.
+    template_csv_by_channel: Optional[Dict[str, Path]] = None
 
 
 DATASETS: Dict[str, DatasetPreset] = {

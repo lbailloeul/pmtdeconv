@@ -68,6 +68,12 @@ def run(args: argparse.Namespace) -> int:
             errors.append(
                 f"fom {ds.fom!r} is not a known FoM ({', '.join(FOMS)})")
 
+    if ds.template_csv_by_channel:
+        for br, p in ds.template_csv_by_channel.items():
+            if not Path(p).exists():
+                warnings.append(
+                    f"per-channel template for {br}: {p} does not exist")
+
     name = ds.name
     for w in warnings:
         print(f"WARN  [{name}] {w}")

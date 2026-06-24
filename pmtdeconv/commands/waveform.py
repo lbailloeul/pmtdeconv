@@ -66,6 +66,13 @@ def run(args: argparse.Namespace) -> int:
     # template CSV is absent (e.g. a fresh clone with no built Cd109 template),
     # matching the hits/tune paths instead of hard-crashing.
     templates = load_template(template_csv, strict=False)
+    # S9: per-channel (per-tube) templates override the shared CSV for the
+    # listed channels — each tube uses its OWN SPE artifact. Additive: datasets
+    # without `templates:` are unaffected.
+    if getattr(settings, "template_csv_by_channel", None):
+        from pmtdeconv.io.templates import load_templates_by_channel
+        templates.update(load_templates_by_channel(
+            settings.template_csv_by_channel, strict=False))
     # Always provide a fallback so unknown branches still get a kernel
     templates.setdefault("_default", FALLBACK_TEMPLATE)
 

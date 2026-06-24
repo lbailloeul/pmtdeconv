@@ -98,6 +98,7 @@ class Settings:
     cosine_cutoff_mhz:     float = 100.0
     default_template_csv:  Optional[Path] = None
     default_template_csv_na22fmt: Optional[Path] = None
+    template_csv_by_channel: Optional[Dict[str, Path]] = None   # S9: per-tube
     offline_data_dir:      Optional[Path] = None
     offline_file_glob:     Optional[str] = None
     spe_band_mv:           Tuple[float, float] = (5.0, 30.0)

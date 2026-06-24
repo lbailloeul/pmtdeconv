@@ -112,6 +112,10 @@ def _field_overrides(raw: dict, card_dir: Path) -> dict:
         ov["hv_volts"] = raw["hv_volts"]
     if "fom" in raw:
         ov["fom"] = raw["fom"]
+    if "templates" in raw and raw["templates"]:
+        # per-channel SPE CSVs: {branch: path}, each resolved vs the card dir
+        ov["template_csv_by_channel"] = {
+            str(br): _resolve(p) for br, p in raw["templates"].items()}
     return ov
 
 
