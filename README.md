@@ -1,14 +1,37 @@
 # bailloeulScripts — pmtdeconv
 
-PMT-waveform deconvolution toolkit. Extracts hit times and integrated charges
-from digitized DRS4 / object-format / pulse-list ROOT files using FFT
-deconvolution against a calibrated single-photoelectron (SPE) template, with
-optional STFT or wavelet denoising. Dataset-agnostic: na22, cd109, milliqan,
-lanl_806, lanl_835, lanl_movedBar.
+`pmtdeconv` is a waveform-processing toolkit that recovers precise particle hit
+times and charges from smeared photomultiplier tube (PMT) signals. Because a
+detector smears signals in a fixed, known way, deconvolution mathematically
+reverses this effect — collapsing broad, overlapping voltage pulses back into
+sharp, individual hits that ordinary raw integration cannot resolve.
+
+It extracts these hits from digitized DRS4 / object-format / pulse-list ROOT
+files using FFT deconvolution against a calibrated single-photoelectron (SPE)
+template, with optional STFT or wavelet denoising. Dataset-agnostic: na22,
+cd109, milliqan, lanl_806, lanl_835, lanl_movedBar.
 
 **The single deployable entry point is `pmtdeconv`** — a unified CLI organized
 around output granularity (`hits` vs `area`) plus supporting template,
 area-source, plotting, timewalk, info, and tune commands.
+
+## Key concepts
+
+**Why deconvolve at all?** Standard analysis reads timing off the sloping edge
+of a raw pulse (which suffers from amplitude-dependent time-walk) and integrates
+a fixed window for charge. By dividing the signal by the SPE footprint,
+`pmtdeconv` collapses each pulse into a sharp peak. This inherently suppresses
+time-walk and separates hits that arrive only nanoseconds apart.
+
+| Term | Definition |
+|---|---|
+| **PMT / DRS4** | Photomultiplier tube (the light sensor) and the fast switched-capacitor digitizer (~2 GS/s) that samples the pulses into waveforms. |
+| **SPE template** | The measured shape of a single-photoelectron pulse: the baseline "footprint" of one photon in a specific detector. |
+| **Kernel** | The SPE template as used in FFT deconvolution — the detector response that is divided out to recover the input (distinct from the cosine low-pass *filter*). |
+| **Time-walk** | A timing bias where larger pulses cross a voltage threshold earlier than small ones. |
+| **STFT / wavelet denoising** | Techniques to clean the high-frequency noise that deconvolution naturally amplifies (time–frequency masking vs. frequency-band separation). |
+| **Veto** | A per-pulse quality cut that drops invalid reconstructions (afterpulses, edge effects, negative charge). |
+| **Golden test** | A regression test asserting a command's CSV output is byte-for-byte identical to a frozen reference, so a refactor cannot silently change physics results. |
 
 ## Project structure
 
@@ -152,8 +175,10 @@ python -m pmtdeconv --help                       # command tree
 python -m pmtdeconv config show na22-timewalk    # inspect a recipe
 python -m pmtdeconv <command> --help             # command flag reference
 
-# 3. (Optional) Build the SPE template — needs Cd109 data. Without it, deconv
-#    falls back to a generic kernel (with a warning); for real charge scale:
+# 3. (Optional) Build the SPE (single-photoelectron) template.
+#    This serves as the "baseline footprint" of one photon for a specific detector.
+#    Needs Cd109 data. Without it, deconv falls back to a generic mathematical
+#    kernel (with a warning); build it to ensure accurate charge scaling:
 python -m pmtdeconv template build --dataset cd109   # → outputs/spe_templates_perfile/spe_templates_perfile.csv
 python -m pmtdeconv template aggregate               # → outputs/spe_templates_perfile/spe_templates_perchannel.csv
 #    The Na22 preset's default template lives elsewhere, so to USE the one you
@@ -183,14 +208,14 @@ diagnostic features.
 
 The deconvolution pipeline follows this sequence:
 
-1. **Baseline estimation** — adaptive sliding window, MAD-based noise, log-σ acceptance threshold (`utils.baseline_noise_bestwindow`)
-2. **FFT deconvolution** with cosine low-pass filter — `u_rec = IFFT(FFT(y) · filt / FFT(SPE))`
-3. **Denoising** (one of):
-   - **STFT** — Gaussian-windowed time-frequency mask (`utils.stft_denoise`)
-   - **Wavelet** — stationary (SWT) decomposition + MAD-thresholding (`utils.wavelet_denoise`)
-4. **Peak finding** — `scipy.signal.find_peaks` with SNR threshold *(peak-finding scripts only)*
-5. **Vetoes** — saturation, no-trigger, out-of-time (peak outside the signal window), post-saturation shift, afterpulse, charge purity *(peak-finding scripts only)*
-6. **Charge integration** — trough-walked window per peak (peak-finding) or fixed window (waveform summary)
+1. **Baseline estimation** — finds the quiet pre-pulse level and noise floor so downstream metrics are measured from true zero. *(adaptive sliding window, MAD-based noise, log-σ acceptance; `utils.baseline_noise_bestwindow`)*
+2. **FFT deconvolution** — reverses the PMT's time-smearing, turning broad pulses into sharp spikes. A cosine low-pass filter suppresses high-frequency electronic fuzz. *(`u_rec = IFFT(FFT(y) · filt / FFT(SPE))`)*
+3. **Denoising** — deconvolution mathematically amplifies high-frequency noise, which is mitigated via:
+   - **STFT** — time–frequency masking (`utils.stft_denoise`)
+   - **Wavelet** — frequency-band separation and thresholding (stationary SWT + MAD; `utils.wavelet_denoise`)
+4. **Peak finding** — locates sharpened hits above an SNR threshold (`scipy.signal.find_peaks`). *(peak-finding scripts only)*
+5. **Vetoes** — drop obviously-bad reconstructions: saturation, no-trigger, out-of-time (peak outside the signal window), post-saturation shift, afterpulse, charge purity *(peak-finding scripts only)*
+6. **Charge integration** — sum the area under each hit: trough-walked window per peak (peak-finding) or fixed window (waveform summary)
 
 ### Three integration modes
 
@@ -267,13 +292,19 @@ and a card under `<data_root>/calibrations/datasets/<name>.yaml` *shadows* the
 in-code seed of the same name (flagged as `[card]` in the run banner + manifest).
 See **Onboarding a new detector** below.
 
+**Why tune?** Because deconvolution amplifies noise, the filter cutoffs are a
+balancing act: cut too much and you blur the pulse back out; cut too little and
+you get false peaks. `tune` automates finding that sweet spot instead of
+guessing by hand.
+
 `tune` runs deterministic sweeps against the seeded
 synthetic regime fixtures (`level1`..`level5`, from low SNR to
 saturated) and scores each candidate config against ground truth —
 charge bias (drift vs the dataset preset's reference config), per-event
 scatter, timing σ, and efficiency. Winners are persisted as
 auto-generated `ConfigPreset` entries that `area`/`hits`
-can pick up via `--preset` with no runtime branching.
+can pick up via `--preset` with no runtime branching. (`tune fom` does the same
+sweep on **real** data against your card's declared figure of merit — see below.)
 
 ### Which subcommand do I use?
 
@@ -457,6 +488,13 @@ The `manifest.json` from a dry-run is enough to confirm the resolved
 settings before committing to a multi-minute run.
 
 ### Worked example 5 — regime-driven parameter sweeps
+
+The goal: find the filter settings that best recover the true signal. Because we
+need a *known* answer to score against, `tune` works on synthetic data where the
+truth is exact. A **regime** is one (pulse-amplitude, noise, clipping) operating
+point — `level1`..`level5` climb a brightness ladder from small, low-SNR pulses
+through the 511 keV-like default (`level3`) up to saturated/clipped pulses
+(`level5`) — so a winning config is chosen per condition.
 
 `tune` builds seeded synthetic fixtures (`tests/fixtures/regime/level<N>/`)
 at the dataset's `dt_ns`, runs the pipeline at each candidate config,
