@@ -80,6 +80,11 @@ SUBCOMMANDS = {
     "vetoes": {
         "calibrate": "vetoes_calibrate",
     },
+    # S4: scaffold + validate file-backed dataset cards (no Python edit).
+    "dataset": {
+        "init": "dataset_init",
+        "lint": "dataset_lint",
+    },
 }
 
 
@@ -121,6 +126,8 @@ LEAF_HELP = {
     ("tune",     "stft"):      "Sweep STFT denoiser per regime, score vs truth.",
     ("tune",     "denoiser"):  "STFT-vs-wavelet verdict: per-pulse FWHM vs cutoff, 5 configs.",
     ("vetoes",   "calibrate"): "Derive a data-driven veto profile from raw waveforms.",
+    ("dataset",  "init"):      "Scaffold a YAML dataset card (no Python edit).",
+    ("dataset",  "lint"):      "Validate a dataset card's fields + settings block.",
 }
 
 
