@@ -1,0 +1,44 @@
+# Dataset card for na22_3ch — generated from the in-code preset by
+#   pmtdeconv dataset init na22_3ch --from-seed
+#
+# Copy this to describe your OWN detector: edit data_dir, dt_ns,
+# polarity and branches, drop `template` (build your own per tube),
+# then:  pmtdeconv dataset lint <your card>
+#
+# ${PMTDECONV_DATA_ROOT} resolves the same way the in-code presets
+# do: $PMTDECONV_DATA_ROOT, else the nearest data/ directory.
+#
+# `meta:` is free-form provenance — tube serial, source, ELOG ref,
+# contact. pmtdeconv never interprets it; it copies it into every
+# manifest so a shared output directory says what produced it.
+name: na22_3ch
+data_dir: ${PMTDECONV_DATA_ROOT}/Na22_lab
+file_glob: flattened_Run*.root
+format: flat
+tree: waveforms
+branches:
+- d0_ch1
+- d0_ch2
+- d0_ch3
+dt_ns: 0.5045844
+polarity: -1
+cosine_cutoff_mhz: 100.0
+spe_band:
+- 50.0
+- 200.0
+pmt_type: na22_3ch_bipolar
+hv_volts:
+  d0_ch1: -1900.0
+  d0_ch2: 1300.0
+pe_band:
+- 0.0
+- 20.0
+notes: 'Recent 3-channel bipolar DRS4 runs (66727+, Range Center 0, negative-going).
+  SOURCE / DETECTOR / PMT VARY PER RUN — check ELOG E41537 before use: 66727 = Na22
+  (LYSO+CsI, HPK PMT); 66808/66809/66810 = Ba133 (CeBr+Bar2, 7725 PMT). This is a
+  DIFFERENT tube than the Cd109/Na22 (E41473, non-7725) template, so templates are
+  built per run (default_template_csv=None). TRACK-2 / TIMING ONLY for multi-hit work:
+  the production ch2 template is the all-stack ENVELOPE kernel (cable-reflection echoes
+  baked in) that deliberately collapses a clump into ONE spike — optimal Δt, NO intra-clump
+  PE separation. Multi-hit / 0–20 PE charge analysis here needs a single-peak (sampled)
+  kernel + a cutoff revisit (vault 14d; deferred follow-up).'

@@ -23,7 +23,7 @@ from pmtdeconv.pipeline.process_hits import WAVELET_PROFILE, STFT_PROFILE
 
 def _detector(**kw) -> Detector:
     """Resolve Settings from a minimal argparse Namespace, then build the
-    Detector exactly as ``commands/pulse.py`` does."""
+    Detector exactly as ``commands/hits.py`` does."""
     args = argparse.Namespace(**kw)
     settings, prov = resolve_settings(args, require_data_root=False)
     return Detector.from_settings(settings, prov, mode="hits")

@@ -9,7 +9,6 @@ flows from the dataset preset + CLI flags.
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
@@ -22,9 +21,11 @@ import uproot
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks
 
-from pmtdeconv.utils import (                                       # noqa: E402
-    deconvolve_hits, cosine_lowpass_filter,
-    find_integration_windows, apply_peak_vetoes,
+from pmtdeconv.core.filters import cosine_lowpass_filter    # noqa: E402
+from pmtdeconv.core.dsp import deconvolve_hits               # noqa: E402
+from pmtdeconv.core.peaks import (                           # noqa: E402
+    find_integration_windows,
+    apply_peak_vetoes,
 )
 # Step 6: the wavelet/STFT curves go through the SAME denoiser wrapper as
 # `hits` (pipeline.denoise.denoise), so the plot's "wavelet" curve is provably
@@ -257,7 +258,7 @@ def render_energy_hist(
             col_, lab = MSTYLE[m]
             ax.hist(v, bins=edges, histtype="step", lw=1.6, color=col_, label=lab)
         ax.set_title(f"d0_ch{c} — whole-waveform")
-        ax.set_yscale("log"); ax.set_xlabel("charge [a.u.]"); ax.set_ylabel("events / bin")
+        ax.set_yscale("log"); ax.set_xlabel("charge [pVs]"); ax.set_ylabel("events / bin")
         ax.legend(); style_root_axes(ax)
 
         ax = axes[1][col]
@@ -266,7 +267,7 @@ def render_energy_hist(
             col_, lab = MSTYLE[m]
             ax.hist(v, bins=edges, histtype="step", lw=1.6, color=col_, label=lab)
         ax.set_title(f"d0_ch{c} — qualifying pulses")
-        ax.set_yscale("log"); ax.set_xlabel("charge [a.u.]"); ax.set_ylabel("events / bin")
+        ax.set_yscale("log"); ax.set_xlabel("charge [pVs]"); ax.set_ylabel("events / bin")
         ax.legend(); style_root_axes(ax)
 
     fig.tight_layout()

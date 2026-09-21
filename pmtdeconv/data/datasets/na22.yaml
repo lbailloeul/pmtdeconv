@@ -1,0 +1,38 @@
+# Dataset card for na22 — generated from the in-code preset by
+#   pmtdeconv dataset init na22 --from-seed
+#
+# Copy this to describe your OWN detector: edit data_dir, dt_ns,
+# polarity and branches, drop `template` (build your own per tube),
+# then:  pmtdeconv dataset lint <your card>
+#
+# ${PMTDECONV_DATA_ROOT} resolves the same way the in-code presets
+# do: $PMTDECONV_DATA_ROOT, else the nearest data/ directory.
+#
+# `meta:` is free-form provenance — tube serial, source, ELOG ref,
+# contact. pmtdeconv never interprets it; it copies it into every
+# manifest so a shared output directory says what produced it.
+name: na22
+data_dir: ${PMTDECONV_DATA_ROOT}/Na22_lab
+file_glob: flattened_Run*.root
+format: flat
+tree: waveforms
+branches:
+- d0_ch1
+- d0_ch2
+dt_ns: 0.5051
+polarity: 1
+cosine_cutoff_mhz: 450.0
+spe_band:
+- 50.0
+- 200.0
+template: ../templates/spe_template_per_channel_unlocked.csv
+template_na22fmt: ../templates/spe_template_unlocked_na22fmt.csv
+pmt_type: milliqan_lab
+hv_volts:
+  d0_ch1: 1450.0
+  d0_ch2: 1450.0
+pe_band:
+- 0.0
+- 20.0
+notes: Na22 lab DRS4 (2-channel mode, ~1.98 GS/s). Default template = Cd109 stacked
+  unlocked.

@@ -1,0 +1,30 @@
+# Dataset card for lanl_806 — generated from the in-code preset by
+#   pmtdeconv dataset init lanl_806 --from-seed
+#
+# Copy this to describe your OWN detector: edit data_dir, dt_ns,
+# polarity and branches, drop `template` (build your own per tube),
+# then:  pmtdeconv dataset lint <your card>
+#
+# ${PMTDECONV_DATA_ROOT} resolves the same way the in-code presets
+# do: $PMTDECONV_DATA_ROOT, else the nearest data/ directory.
+#
+# `meta:` is free-form provenance — tube serial, source, ELOG ref,
+# contact. pmtdeconv never interprets it; it copies it into every
+# manifest so a shared output directory says what produced it.
+name: lanl_806
+data_dir: ${PMTDECONV_DATA_ROOT}/806_real
+file_glob: flattened_waveform_*.root
+format: flat
+tree: waveforms
+branches: auto
+dt_ns: 1.25
+polarity: -1
+cosine_cutoff_mhz: 100.0
+spe_band:
+- 5.0
+- 25.0
+pmt_type: lanl_fast
+pe_band:
+- 0.0
+- 20.0
+notes: LANL Run 806 (fast PMT). Polarity = -1.

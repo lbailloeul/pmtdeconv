@@ -1,7 +1,7 @@
 """pmtdeconv — unified CLI for the PMT-waveform deconvolution toolkit.
 
 As of the PR 10 cleanup the package is **self-contained**: all the math
-(``pmtdeconv.utils``), per-run pipelines (``pmtdeconv.pipeline``), plot
+(``pmtdeconv.core``), per-run pipelines (``pmtdeconv.pipeline``), plot
 helpers (``pmtdeconv.plotting``), preset registry (``pmtdeconv.presets``),
 and CLI command modules (``pmtdeconv.commands``) live inside this
 package. The repo root only carries ``pmtdeconv/`` + ``tests/`` + docs;
@@ -18,7 +18,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Repo root (still used by several commands to resolve default output
 # directories, fixtures, etc.).
@@ -30,7 +30,14 @@ _GIT_INFO_CACHE: Optional[dict] = None
 
 
 def get_git_info(repo_root: Optional[Path] = None) -> dict:
-    """Return {'sha', 'branch', 'dirty'} for the toolkit's git repo.
+    """Return {'sha', 'branch', 'dirty', 'dirty_files'} for the toolkit.
+
+    ``dirty`` is scoped to the code that actually RAN — ``pmtdeconv/`` and
+    ``pyproject.toml`` — not the whole repository. The git root is the parent
+    ``timewalksim/`` checkout, so an unscoped ``git status`` flagged a run as
+    dirty because of an unrelated ``.DS_Store`` or notebook: a warning that
+    cries wolf gets ignored. ``dirty_files`` (capped) says exactly which code
+    differs from ``sha``, which is what a reproduction attempt needs.
 
     Returns empty strings / False if not in a git checkout or git not
     available. Cached after the first call.
@@ -39,7 +46,8 @@ def get_git_info(repo_root: Optional[Path] = None) -> dict:
     if _GIT_INFO_CACHE is not None:
         return _GIT_INFO_CACHE
     root = repo_root or PROJECT_ROOT
-    info = {"sha": "", "branch": "", "dirty": False}
+    info = {"sha": "", "branch": "", "dirty": False, "dirty_count": 0,
+            "dirty_files": []}
     try:
         info["sha"] = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=root,
@@ -50,10 +58,14 @@ def get_git_info(repo_root: Optional[Path] = None) -> dict:
             stderr=subprocess.DEVNULL,
         ).decode().strip()
         status = subprocess.check_output(
-            ["git", "status", "--porcelain"], cwd=root,
+            ["git", "status", "--porcelain", "--",
+             "pmtdeconv", "pyproject.toml"], cwd=root,
             stderr=subprocess.DEVNULL,
-        ).decode().strip()
-        info["dirty"] = bool(status)
+        ).decode()
+        changed = [ln[3:] for ln in status.splitlines() if ln.strip()]
+        info["dirty"] = bool(changed)
+        info["dirty_count"] = len(changed)          # true count
+        info["dirty_files"] = changed[:50]          # capped listing
     except (FileNotFoundError, subprocess.CalledProcessError):
         pass
     _GIT_INFO_CACHE = info

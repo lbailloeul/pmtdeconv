@@ -17,7 +17,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     sub = parser.add_subparsers(dest="config_action", required=True)
 
     show = sub.add_parser("show", help="Show a dataset or named preset")
-    show.add_argument("name", help="Dataset or preset name")
+    show.add_argument("name", nargs="?", default=None,
+                      help="Dataset or preset name. Omit to LIST every named "
+                           "preset (absorbed from the removed `info presets` "
+                           "on 2026-09-14).")
     show.add_argument("--json", action="store_true")
     add_common_args(show)
     show.set_defaults(_config_fn=_show)
@@ -48,7 +51,48 @@ def _json_value(value):
     return value
 
 
+def _list_presets(args: argparse.Namespace) -> int:
+    """``config show`` with no name — every named preset and its overrides.
+
+    This is the old ``info presets`` output, moved here 2026-09-14: listing
+    presets and showing one preset belong to the same verb, and `info` now
+    covers only things that are not settings (datasets, template files,
+    offline files).
+    """
+    if not CONFIGS:
+        print("(no named configuration presets registered)")
+        return 0
+    if args.json:
+        payload = {
+            name: {
+                "base_dataset": cfg.base_dataset,
+                "description": cfg.description,
+                "references": list(cfg.references),
+                "overrides": {k: _json_value(v)
+                              for k, v in cfg.overrides.items()},
+            }
+            for name, cfg in CONFIGS.items()
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+    for name, cfg in CONFIGS.items():
+        print(f"━━━ {name}")
+        print(f"    base_dataset : {cfg.base_dataset}")
+        if cfg.references:
+            print(f"    references   : {', '.join(cfg.references)}")
+        print(f"    description  : {cfg.description}")
+        print(f"    overrides    :")
+        for k, v in cfg.overrides.items():
+            print(f"        {k:<20} = {v!r}")
+        print()
+    print(f"{len(CONFIGS)} named preset(s). "
+          f"`config show <name>` for one; `info datasets` for detectors.")
+    return 0
+
+
 def _show(args: argparse.Namespace) -> int:
+    if args.name is None:
+        return _list_presets(args)
     if args.name in CONFIGS:
         cfg = CONFIGS[args.name]
         payload = {

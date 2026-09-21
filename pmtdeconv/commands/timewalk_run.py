@@ -38,12 +38,23 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                    help="Per-event area CSV. Default: auto-resolved from "
                         "<dataset> + <preset> + <run> by looking under "
                         "raw_area_* and waveform output dirs.")
-    g.add_argument("--pulse-csv", type=str, default=None,
-                   help="Per-event deconv-pulse CSV. Default: auto-resolved from "
+    # Renamed from --pulse-csv on 2026-09-21: the file comes from `hits`.
+    # (Internal attribute stays `pulse_csv`.)
+    from pmtdeconv.cli import add_renamed_alias
+    add_renamed_alias(g, "--pulse-csv", "--hits-csv", dest="pulse_csv")
+    g.add_argument("--hits-csv", dest="pulse_csv", type=str, default=None,
+                   help="Per-hit CSV from `hits` (hits.csv). Default: auto-resolved from "
                         "outputs/deconv_pulse_<dataset>_lab_cosine_wavelet"
                         "[__<preset>]/.")
     g.add_argument("--ref-branch", type=str, default="d0_ch1")
     g.add_argument("--scan-branch", type=str, default="d0_ch2")
+    g.add_argument("--time-col", choices=("t_peak", "t_half"),
+                   default="t_peak",
+                   help="Pulse-CSV timestamp column for Δt. `t_peak` "
+                        "(default): deconv apex time. `t_half`: CFD-50 "
+                        "rising-edge crossing (MQAna `halftime`) — the "
+                        "lower-jitter estimator; pair the `hits` run with "
+                        "--peak-order first.")
     g.add_argument("--a-ref", type=float, nargs=2, default=(100_000.0, 110_000.0),
                    metavar=("LO", "HI"),
                    help="Reference-channel area window in pVs (default "
@@ -144,6 +155,7 @@ def run(args: argparse.Namespace) -> int:
         a_scan_start=args.a_scan_start, a_scan_stop=args.a_scan_stop,
         a_scan_step=args.a_scan_step, a_scan_width=args.a_scan_width,
         ref_branch=args.ref_branch, scan_branch=args.scan_branch,
+        time_col=args.time_col,
         xrange=tuple(args.xrange),
         bin_width_ns=args.bin_width,
         dt_offset=args.dt_offset,

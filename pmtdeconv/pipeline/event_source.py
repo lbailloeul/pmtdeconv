@@ -32,13 +32,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Iterator, List, Optional
 
 import awkward as ak
 import numpy as np
 import uproot
 
-from pmtdeconv.utils import DTYPE
+from pmtdeconv.core.kernels import DTYPE
 
 
 @dataclass
@@ -223,3 +223,22 @@ def iter_object_run_events(
                     branch=branch, entry=entry_i,
                     wave=wave, t=t_full, N=len(wave), dt_ns=dt_ns,
                 )
+
+
+def load_entry_list(path):
+    """Load an entry filter for ``--entry-list``: a CSV with an ``entry``
+    column (e.g. `select multihit`'s event_list.csv) or a plain text file of
+    one entry index per line. Returns a set of ints (empty file → empty set,
+    which filters out everything — loud rather than silent)."""
+    from pathlib import Path as _P
+    import pandas as _pd
+    p = _P(path)
+    if not p.exists():
+        raise SystemExit(f"--entry-list {p}: file not found")
+    try:
+        df = _pd.read_csv(p)
+        if "entry" in df.columns:
+            return set(int(e) for e in df["entry"].dropna())
+    except Exception:
+        pass
+    return set(int(line) for line in p.read_text().split() if line.strip())

@@ -74,12 +74,6 @@ def test_cli_version():
     ["area", "--help"],
     ["raw-area", "--help"],
     ["raw-area", "mqana", "--help"],
-    ["pulse", "--help"],
-    ["waveform", "--help"],
-    ["raw_area", "--help"],
-    ["raw_area", "mqana", "--help"],
-    ["raw_area", "drs", "--help"],
-    ["raw_area", "offline", "--help"],
     ["timewalk", "--help"],
     ["timewalk", "run", "--help"],
     ["timewalk", "gif", "--help"],
@@ -88,7 +82,7 @@ def test_cli_version():
     ["plot", "energy", "--help"],
     ["plot", "analyze", "--help"],
     ["info", "--help"],
-    ["info", "artifacts", "--help"],
+    ["results", "index", "--help"],
     ["config", "--help"],
     ["config", "resolve", "--help"],
     ["results", "--help"],
@@ -260,29 +254,32 @@ def test_file_sha256_empty_for_missing(tmp_path):
 
 
 def test_direct_granularity_commands_write_canonical_manifests(tmp_path):
-    pulse_out = tmp_path / "pulse"
+    """`hits` / `area` write a manifest on --dry-run, recording their REAL
+    command names. Until 2026-09-21 they stored the pre-rename "pulse" /
+    "waveform"; `results` still normalizes those when reading old runs."""
+    hits_out = tmp_path / "hits"
     assert cli.main([
-        "pulse", "--out-dir", str(pulse_out), "--dry-run",
+        "hits", "--out-dir", str(hits_out), "--dry-run",
         "--log-level", "quiet",
     ]) == 0
-    assert json.loads((pulse_out / "manifest.json").read_text())["subcommand"] == "pulse"
+    assert json.loads((hits_out / "manifest.json").read_text())["subcommand"] == "hits"
 
-    waveform_out = tmp_path / "waveform"
+    area_out = tmp_path / "area"
     assert cli.main([
-        "waveform", "--out-dir", str(waveform_out), "--dry-run",
+        "area", "--out-dir", str(area_out), "--dry-run",
         "--log-level", "quiet",
     ]) == 0
-    assert json.loads((waveform_out / "manifest.json").read_text())["subcommand"] == "waveform"
+    assert json.loads((area_out / "manifest.json").read_text())["subcommand"] == "area"
 
 
 def test_stft_pulse_dry_run_writes_canonical_manifest(tmp_path):
     out_dir = tmp_path / "pulse_stft"
     assert cli.main([
-        "pulse", "--denoiser", "stft", "--out-dir", str(out_dir),
+        "hits", "--denoiser", "stft", "--out-dir", str(out_dir),
         "--dry-run", "--log-level", "quiet",
     ]) == 0
     m = json.loads((out_dir / "manifest.json").read_text())
-    assert m["subcommand"] == "pulse"
+    assert m["subcommand"] == "hits"
     assert m["settings"]["denoiser"] == "stft"
 
 
@@ -399,18 +396,19 @@ def test_artifact_index_reads_manifest_and_orphan_dir(tmp_path):
     assert json.loads(target.read_text())["summary"]["n_artifacts"] == 2
 
 
-def test_deconv_pulse_result_tables_write_canonical_and_compat(tmp_path):
+def test_deconv_pulse_result_tables_write_canonical_only(tmp_path):
     rows = [
         {"success": True, "reason": "", "charge": 1.0},
         {"success": False, "reason": "negative_charge", "charge": -0.2},
     ]
     tables = write_deconv_pulse_result_tables(rows, tmp_path)
 
+    # The byte-identical `deconv_pulses.csv` copy was dropped 2026-09-14 —
+    # every run had been writing the whole table twice for a 2026-06 rename.
     compat = tmp_path / "deconv_pulses.csv"
-    assert tables.deconv_pulse_csv.name == "deconv_pulse.csv"
+    assert tables.deconv_pulse_csv.name == "hits.csv"
     assert tables.deconv_pulse_csv.exists()
-    assert compat.exists()
-    assert tables.deconv_pulse_csv.read_bytes() == compat.read_bytes()
+    assert not compat.exists()
     assert tables.all_results_csv.exists()
     assert tables.negative_charge_csv is not None
     assert tables.negative_charge_csv.exists()
@@ -542,3 +540,255 @@ def test_fixed_window_matches_legacy_math():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ─── introspection reshuffle (2026-09-14) ─────────────────────────
+
+def test_moved_introspection_leaves_kept_their_capability():
+    """`info presets` -> `config show` (no name); `info artifacts` ->
+    `results index`.
+
+    Both were MOVES, not deletions: `config show` required a name so it could
+    not list, and `results list` had no index-writing or orphan audit. This
+    pins that each verb now owns one domain — info = detectors and files,
+    config = settings, results = outputs — and that neither capability was
+    dropped on the way.
+    """
+    from pmtdeconv.commands import info as info_mod
+    from pmtdeconv.commands import config as config_mod
+    from pmtdeconv.commands import results as results_mod
+
+    # the moved leaves are gone from `info` ...
+    parser = argparse.ArgumentParser()
+    info_mod.add_arguments(parser)
+    info_leaves = set()
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            info_leaves = set(action.choices)
+    assert info_leaves == {"datasets", "template", "offline-file"}, info_leaves
+
+    # ... and `config show` now lists presets with no name given
+    assert hasattr(config_mod, "_list_presets")
+    parser = argparse.ArgumentParser()
+    config_mod.add_arguments(parser)
+    args = parser.parse_args(["show"])
+    assert args.name is None, "`config show` must accept a missing name"
+
+    # ... and `results index` carries the artifact-index maintenance flags
+    parser = argparse.ArgumentParser()
+    results_mod.add_arguments(parser)
+    args = parser.parse_args(["index", "--write", "--no-orphans"])
+    assert args.results_action == "index"
+    assert args.no_orphans is True
+
+
+# ─── --dataset / --preset separation (2026-09-18) ─────────────────
+
+def _resolve_argv(argv):
+    parser = argparse.ArgumentParser()
+    cli.add_common_args(parser)
+    return resolve_settings(parser.parse_args(argv + ["--dry-run"]))
+
+
+def test_dataset_rejects_a_preset_name():
+    """`--dataset` names a DETECTOR, `--preset` names a RECIPE.
+
+    Until 2026-09-18 `--dataset` also took a preset name, giving three
+    spellings for one run. The real defect was `--dataset P1 --preset P2`:
+    both presets' overrides stacked while only P2's name reached the manifest
+    and the output directory. Refusing a preset here makes that
+    unrepresentable rather than merely discouraged.
+    """
+    preset = next(iter(CONFIGS))
+    with pytest.raises(SystemExit) as exc:
+        _resolve_argv(["--dataset", preset])
+    message = str(exc.value)
+    assert f"--preset {preset}" in message, message
+    assert "names a config preset" in message
+
+
+def test_preset_still_composes_onto_any_dataset():
+    """The one thing keeping both flags buys: a recipe from one detector
+    applied to another. `--preset` must override the dataset's own values."""
+    settings, provenance = _resolve_argv(
+        ["--dataset", "lanl_806", "--preset", "na22-timewalk"])
+    assert settings.dataset == "lanl_806"
+    assert settings.config_preset_name == "na22-timewalk"
+    # lanl_806's own cutoff is 100 MHz; the preset's 450 must win.
+    assert settings.cosine_cutoff_mhz == 450.0
+    assert provenance["cosine_cutoff_mhz"] == "config"
+    assert provenance["polarity"] == "dataset"      # detector value survives
+    assert settings.polarity == -1
+
+
+def test_preset_alone_still_fills_in_its_base_dataset():
+    """`--preset X` with no --dataset keeps resolving X's base detector."""
+    settings, _ = _resolve_argv(["--preset", "na22-timewalk"])
+    assert settings.dataset == "na22"
+    assert settings.config_preset_name == "na22-timewalk"
+
+
+def test_a_real_dataset_name_wins_over_a_same_named_preset(monkeypatch):
+    """A name that is BOTH a dataset and a preset resolves as the dataset —
+    `--dataset` should never be refused for a detector that genuinely exists."""
+    from pmtdeconv.presets import configs as configs_mod
+    monkeypatch.setitem(CONFIGS, "na22", configs_mod.ConfigPreset(
+        name="na22", base_dataset="na22", description="collision fixture",
+        overrides={}))
+    settings, _ = _resolve_argv(["--dataset", "na22"])
+    assert settings.dataset == "na22"
+
+
+# ─── run.log console transcript (2026-09-18) ──────────────────────
+
+def test_run_log_written_beside_manifest(tmp_path):
+    """Every manifest-writing run drops a run.log transcript next to it.
+
+    The manifest is the structured record; run.log is what the run actually
+    SAID — resolved paths, template lines, the veto-rate banner. Before this,
+    that stream vanished with the terminal, so a collaborator reporting "weird
+    results" had no way to show what happened.
+    """
+    out_dir = tmp_path / "hits"
+    assert cli.main([
+        "hits", "--dataset", "na22", "--runs", "0", "--dry-run",
+        "--out-dir", str(out_dir), "--log-level", "quiet",
+    ]) == 0
+
+    log = out_dir / "run.log"
+    assert log.exists(), "run.log must sit beside manifest.json"
+    text = log.read_text()
+    assert "pmtdeconv hits" in text          # the provenance banner
+    assert "dataset" in text
+
+    manifest = json.loads((out_dir / "manifest.json").read_text())
+    roles = {o["role"] for o in manifest["outputs"]}
+    assert "run_log" in roles, "run.log must be recorded as an output"
+
+
+def test_run_log_capture_is_restored_after_main():
+    """cli.main() must always restore sys.stdout — an in-process caller
+    (this test suite) must not be left writing into a dangling tee."""
+    import sys as _sys
+    from pmtdeconv.io import run_log
+    before_out, before_err = _sys.stdout, _sys.stderr
+    with pytest.raises(SystemExit):
+        cli.main(["hits", "--dataset", "definitely-not-a-dataset"])
+    assert _sys.stdout is before_out
+    assert _sys.stderr is before_err
+    assert run_log.captured_text() == ""
+
+
+# ─── --root -> --file rename (2026-09-21) ─────────────────────────
+
+@pytest.mark.parametrize("module,old,new,dest,extra", [
+    ("raw_area_drs",     "--root",      "--file",      "file",      []),
+    ("raw_area_offline", "--root",      "--file",      "file",      []),
+    ("plot_energy",      "--proc-root", "--file",      "file",      []),
+    ("run_recipe",       "--area-root", "--area-file", "area_file", []),
+    ("run_recipe",       "--proc-root", "--proc-file", "proc_file", []),
+])
+def test_renamed_file_flags(module, old, new, dest, extra, capsys):
+    """`--root` named the file FORMAT and sat beside `--data-root`, a
+    DIRECTORY — easy to swap. The new spelling must work; the old one must
+    keep working until 1.0, point at the new name, and stay out of --help so
+    it is not advertised."""
+    import importlib
+    mod = importlib.import_module(f"pmtdeconv.commands.{module}")
+
+    def parse(argv):
+        parser = argparse.ArgumentParser()
+        mod.add_arguments(parser)
+        return parser, parser.parse_args(argv)
+
+    parser, args = parse([*extra, new, "/x/Run7.root"])
+    value = getattr(args, dest)
+    assert (value == ["/x/Run7.root"]) or (value == "/x/Run7.root")
+
+    _, args = parse([*extra, old, "/x/Run7.root"])
+    value = getattr(args, dest)
+    assert (value == ["/x/Run7.root"]) or (value == "/x/Run7.root")
+    assert new in capsys.readouterr().err, "old spelling must name its replacement"
+
+    assert old not in parser.format_help(), f"{old} must be hidden from --help"
+    assert new in parser.format_help()
+
+
+# ─── 2026-09-21 batch: hashing default, dirty banner, vocabulary ──
+
+def test_input_hashing_is_on_by_default():
+    """Hashing is what lets two manifests prove they used the same card,
+    template and data. Its old opt-in rationale ("slow") was measured false."""
+    for argv, expect in (([], True), (["--no-hash-inputs"], False),
+                         (["--hash-inputs"], True)):
+        parser = argparse.ArgumentParser()
+        cli.add_common_args(parser)
+        settings, _ = resolve_settings(parser.parse_args(argv + ["--dry-run"]),
+                                       require_data_root=False)
+        assert settings.hash_inputs is expect, argv
+
+
+@pytest.mark.parametrize("dirty", [True, False])
+def test_banner_warns_loudly_only_when_code_is_dirty(dirty, monkeypatch):
+    """A run from modified code cannot be reproduced from its recorded SHA —
+    say so up front, and stay silent when the code is committed (a warning
+    that always fires gets ignored)."""
+    from pmtdeconv.io import banner
+    monkeypatch.setattr(banner, "get_git_info", lambda: {
+        "sha": "abcdef1234", "branch": "b", "dirty": dirty,
+        "dirty_count": 3 if dirty else 0,
+        "dirty_files": ["pmtdeconv/cli.py"] if dirty else []})
+    text = banner.format_run_banner("hits", Settings(dataset="na22"), {})
+    assert ("NOT REPRODUCIBLE FROM GIT" in text) is dirty
+    if dirty:
+        assert "3 uncommitted change(s)" in text
+
+
+def test_results_filter_matches_old_and_new_manifest_names():
+    """Old manifests store "pulse"; new ones store "hits". `--command hits`
+    (or the legacy "pulse") must find both — the previous stored-name
+    translation would have silently missed every new run."""
+    from types import SimpleNamespace
+    from pmtdeconv.commands import results
+    entries = [{"subcommand": "pulse"}, {"subcommand": "hits"},
+               {"subcommand": "raw_area mqana"}, {"subcommand": "raw-area drs"},
+               {"subcommand": "area"}]
+    for query in ("hits", "pulse"):
+        got = results._filtered(
+            SimpleNamespace(dataset=None, preset=None, command=query),
+            Path("."), entries)
+        assert {e["subcommand"] for e in got} == {"pulse", "hits"}, query
+    got = results._filtered(
+        SimpleNamespace(dataset=None, preset=None, command="raw-area"),
+        Path("."), entries)
+    assert {e["subcommand"] for e in got} == {"raw_area mqana", "raw-area drs"}
+
+
+def test_hits_csv_is_written_and_legacy_names_still_resolve(tmp_path):
+    """`hits` writes hits.csv; output dirs from before the rename (named
+    deconv_pulse.csv or deconv_pulses.csv) must still be found."""
+    import pandas as pd
+    from pmtdeconv.io.deconv_pulse import (resolve_deconv_pulse_csv,
+                                           write_deconv_pulse_csv)
+    assert write_deconv_pulse_csv(pd.DataFrame({"a": [1]}), tmp_path / "new"
+                                  ).name == "hits.csv"
+    for legacy in ("deconv_pulse.csv", "deconv_pulses.csv"):
+        d = tmp_path / legacy.replace(".csv", "")
+        d.mkdir()
+        (d / legacy).write_text("a\n1\n")
+        assert resolve_deconv_pulse_csv(d).name == legacy
+    assert resolve_deconv_pulse_csv(tmp_path / "empty") is None
+
+
+@pytest.mark.parametrize("module", ["gain_calibrate", "plot_deconv_value",
+                                    "select_multihit", "timewalk_gif",
+                                    "timewalk_run"])
+def test_pulse_csv_flag_renamed_to_hits_csv(module, capsys):
+    import importlib
+    mod = importlib.import_module(f"pmtdeconv.commands.{module}")
+    parser = argparse.ArgumentParser()
+    mod.add_arguments(parser)
+    assert parser.parse_args(["--hits-csv", "x.csv"]).pulse_csv == "x.csv"
+    assert parser.parse_args(["--pulse-csv", "x.csv"]).pulse_csv == "x.csv"
+    assert "--hits-csv" in capsys.readouterr().err
+    assert "--pulse-csv" not in parser.format_help()

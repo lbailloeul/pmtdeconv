@@ -37,6 +37,26 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _json_safe(value: Any) -> Any:
+    """Coerce a Settings value into something ``json.dump`` accepts.
+
+    Most fields are scalars, Paths or tuples. A card's free-form ``meta`` block
+    can hold anything YAML parses — dates, nested maps, lists — and an
+    unserializable value used to abort ``json.dump`` MID-WRITE, leaving a
+    truncated manifest.json on disk: the run succeeded, its provenance record
+    was corrupt. Anything unrecognized degrades to ``str`` instead.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return str(value)
+
+
 def _stat_input(path: Path, do_hash: bool) -> Dict[str, Any]:
     """Stat + optionally hash a single input file."""
     entry: Dict[str, Any] = {"path": str(path)}
@@ -109,12 +129,16 @@ def write_manifest(
     # Convert Settings dataclass → dict, casting Path → str
     settings_dict: Dict[str, Any] = {}
     for f in dataclasses.fields(settings):
-        v = getattr(settings, f.name)
-        if isinstance(v, Path):
-            v = str(v)
-        elif isinstance(v, tuple):
-            v = list(v)
-        settings_dict[f.name] = v
+        settings_dict[f.name] = _json_safe(getattr(settings, f.name))
+
+    # The dataset CARD is an input like any data file: it is the configuration
+    # the run was built from. Injected centrally so every command records it
+    # (and --hash-inputs fingerprints it), rather than each command remembering.
+    card = getattr(settings, "dataset_card_path", None)
+    if card and Path(card).exists():
+        already = {str(Path(i.get("path", ""))) for i in inputs}
+        if str(Path(card)) not in already:
+            inputs = [{"role": "dataset_card", "path": str(card)}, *inputs]
 
     # Stat / hash inputs and outputs (outputs hashed only if requested)
     enriched_inputs = []
@@ -161,6 +185,18 @@ def write_manifest(
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Drop the console transcript beside the manifest, and record it as an
+    # output so `results show` lists it. The manifest is the structured record;
+    # run.log is what the run actually SAID (warnings, resolved paths, veto
+    # rates) — together they make an output directory self-describing.
+    from pmtdeconv.io.run_log import RUN_LOG_NAME, RUN_LOG_ROLE, write_run_log
+    if write_run_log(out_path.parent) is not None:
+        manifest["outputs"].append({
+            "role": RUN_LOG_ROLE,
+            "path": str(out_path.parent / RUN_LOG_NAME),
+        })
+
     with open(out_path, "w") as fh:
         json.dump(manifest, fh, indent=2, sort_keys=False)
     return out_path

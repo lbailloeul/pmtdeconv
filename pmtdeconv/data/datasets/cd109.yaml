@@ -1,0 +1,34 @@
+# Dataset card for cd109 — generated from the in-code preset by
+#   pmtdeconv dataset init cd109 --from-seed
+#
+# Copy this to describe your OWN detector: edit data_dir, dt_ns,
+# polarity and branches, drop `template` (build your own per tube),
+# then:  pmtdeconv dataset lint <your card>
+#
+# ${PMTDECONV_DATA_ROOT} resolves the same way the in-code presets
+# do: $PMTDECONV_DATA_ROOT, else the nearest data/ directory.
+#
+# `meta:` is free-form provenance — tube serial, source, ELOG ref,
+# contact. pmtdeconv never interprets it; it copies it into every
+# manifest so a shared output directory says what produced it.
+name: cd109
+data_dir: ${PMTDECONV_DATA_ROOT}/Cd109_lab
+file_glob: flattened_Run*.root
+format: flat
+tree: waveforms
+branches:
+- d0_ch1
+- d0_ch2
+dt_ns: 1.432
+polarity: 1
+cosine_cutoff_mhz: 50.0
+spe_band:
+- 5.0
+- 25.0
+template: ../templates/spe_template_per_channel_unlocked.csv
+pmt_type: milliqan_lab
+pe_band:
+- 0.0
+- 20.0
+notes: Cd109 22-keV X-ray source, 4-channel mode (~700 MS/s). Source of the stacked
+  SPE template. Cosine cutoff capped at 50 MHz per the conditioning-cliff finding.

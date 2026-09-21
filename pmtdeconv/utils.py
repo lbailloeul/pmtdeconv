@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""
-Shared utilities for deconvolution and fitting pipelines.
+"""Compatibility shim — re-exports :mod:`pmtdeconv.core` under the old name.
 
-**Facade (2026-05-31).** The implementations were split by domain into
-``pmtdeconv/core/`` — see :mod:`pmtdeconv.core`:
+The implementations were split by domain into ``pmtdeconv/core/`` (2026-05-31),
+which is the single source of truth:
 
   - :mod:`pmtdeconv.core.kernels`  — SPE template models + parameters
   - :mod:`pmtdeconv.core.filters`  — frequency-domain low-pass filters
   - :mod:`pmtdeconv.core.dsp`      — FFT deconvolution, STFT/wavelet denoise, baseline
   - :mod:`pmtdeconv.core.peaks`    — integration windows, FWHM, per-peak vetoes
 
-This module re-exports every name (public functions, the ``_walk_to_trough_*``
-helpers, and the ``DTYPE`` / ``DT_NS`` / template-parameter constants) so the
-package modules and the ~35 legacy scripts keep importing from
-``pmtdeconv.utils`` unchanged. Behaviour is byte-for-byte identical — the
-golden fixtures are the guarantee. Prefer importing from the ``core`` submodule
-in new code.
+**Nothing inside ``pmtdeconv`` imports this module any more** (migrated
+2026-09-04). It exists so the local, gitignored ``legacy/`` scripts — which
+predate the split and are not part of the shipped surface — keep working
+unchanged. Import from ``pmtdeconv.core.*`` in all new code; this shim may be
+removed once ``legacy/`` is retired.
 """
 # Re-exports are explicit (not ``import *``) so the underscore trough-walk
 # helpers and the module constants are guaranteed to come across.
@@ -43,6 +41,7 @@ from pmtdeconv.core.peaks import (
     _walk_to_trough_right,
     _walk_to_trough_left,
     find_integration_windows,
+    cfd50_time,
     fwhm_ns,
     apply_peak_vetoes,
 )
@@ -65,6 +64,7 @@ __all__ = [
     "_walk_to_trough_right",
     "_walk_to_trough_left",
     "find_integration_windows",
+    "cfd50_time",
     "fwhm_ns",
     "apply_peak_vetoes",
 ]

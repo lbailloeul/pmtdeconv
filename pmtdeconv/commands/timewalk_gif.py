@@ -34,9 +34,20 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     g = parser.add_argument_group("timewalk gif")
     # Shared with `timewalk run`
     g.add_argument("--area-csv", type=str, default=None)
-    g.add_argument("--pulse-csv", type=str, default=None)
+    # Renamed from --pulse-csv on 2026-09-21: the file comes from `hits`.
+    # (Internal attribute stays `pulse_csv`.)
+    from pmtdeconv.cli import add_renamed_alias
+    add_renamed_alias(g, "--pulse-csv", "--hits-csv", dest="pulse_csv")
+    g.add_argument("--hits-csv", dest="pulse_csv", type=str, default=None)
     g.add_argument("--ref-branch", type=str, default="d0_ch1")
     g.add_argument("--scan-branch", type=str, default="d0_ch2")
+    g.add_argument("--time-col", choices=("t_peak", "t_half"),
+                   default="t_peak",
+                   help="Pulse-CSV timestamp column for Δt. `t_peak` "
+                        "(default): deconv apex time. `t_half`: CFD-50 "
+                        "rising-edge crossing (MQAna `halftime`) — the "
+                        "lower-jitter estimator; pair the `hits` run with "
+                        "--peak-order first.")
     g.add_argument("--a-ref", type=float, nargs=2,
                    default=(100_000.0, 110_000.0), metavar=("LO", "HI"))
     g.add_argument("--a-scan-start", type=float, default=0.0)
@@ -67,7 +78,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--log-y", action="store_true",
                    help="Log-scale the Δt-histogram y-axis (entries) so the "
                         "tails of the timing distribution are visible.")
-    g.add_argument("--method-label", default=r"deconv $t_{peak}$")
+    g.add_argument("--method-label", default=None,
+                   help="Frame annotation for the timing method. Default "
+                        "follows --time-col (deconv t_peak / t_half).")
 
 
 def _build_scatter_data(area_csv: Path, args, scatter_max: float,
@@ -147,6 +160,7 @@ def run(args: argparse.Namespace) -> int:
         a_scan_step=args.a_scan_step, a_scan_width=args.a_scan_width,
         a_scan_windows=a_scan_windows,
         ref_branch=args.ref_branch, scan_branch=args.scan_branch,
+        time_col=args.time_col,
         xrange=tuple(args.xrange),
         bin_width_ns=args.bin_width,
         dt_offset=args.dt_offset,
@@ -188,7 +202,9 @@ def run(args: argparse.Namespace) -> int:
         sel = scan.base_mask & (scan.a_scan >= lo) & (scan.a_scan <= hi)
         render_frame(
             scan.dt[sel],
-            method_label=args.method_label,
+            method_label=(args.method_label
+                          or (r"deconv $t_{half}$" if args.time_col == "t_half"
+                              else r"deconv $t_{peak}$")),
             run_id=run_id,
             a_ref_lo=args.a_ref[0],
             a_ref_hi=args.a_ref[1],

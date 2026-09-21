@@ -8,8 +8,14 @@ Two scoring modes:
 
 - ``mode="hits"``: produced CSV follows HIT_RESULTS_COLUMNS. The
   primary peak (``peak_id == 1``) per ``(event, branch)`` is matched to
-  truth. Metrics: charge bias, charge scatter, timing σ (over
-  ``t_peak - true_center_ns``), efficiency.
+  truth — structurally single-pulse (multi-pulse truth needs the
+  ``hits-multi`` mode). Metrics: charge bias, charge scatter, timing σ
+  (over ``t_peak - true_center_ns``), efficiency.
+
+Scale convention: ``charge_bias`` / ``charge_scatter`` are computed on
+ratio residuals normalized by the MEDIAN produced/true ratio — they are
+scale-free (an overall gain error does not show up in them by design).
+``charge_ratio_median`` is the only absolute-scale check.
 
 Composite score (lower is better):
 
@@ -44,10 +50,63 @@ class ScoringWeights:
 DEFAULTS = ScoringWeights()
 
 
+def match_pulses(true_times, found_times, tol_ns: float = 15.0,
+                 exactly_n: Optional[int] = None) -> Dict:
+    """Greedy nearest-time matching of truth pulses to found peaks.
+
+    Promoted 2026-07-28 from ``tests/test_accuracy_floor.py::
+    test_pileup_separation`` — the library multi-hit matcher. Each truth time
+    (in input order) claims the closest UNUSED found peak within ``tol_ns``.
+
+    Returns a dict:
+        matched_pairs   — list of (i_true, j_found) index pairs
+        n_true, n_found, n_matched
+        residuals_ns    — found − true for each matched pair (np.ndarray)
+        n_merged        — unmatched truth whose nearest peak was already
+                          claimed by another truth pulse (two hits → one peak)
+        n_missed        — unmatched truth with no peak within tol at all
+        recognized      — ``exactly_n`` mode (the Tang et al. 2411.07620
+                          criterion with exactly_n=2, tol_ns=2): True iff
+                          exactly ``exactly_n`` peaks were found AND every
+                          truth pulse matched within tol.
+    """
+    tt = np.asarray(true_times, dtype=float)
+    ft = np.asarray(found_times, dtype=float)
+    used: set = set()
+    pairs = []
+    resid = []
+    n_merged = 0
+    n_missed = 0
+    for i, t in enumerate(tt):
+        if ft.size == 0:
+            n_missed += 1
+            continue
+        d = np.abs(ft - t)
+        order = np.argsort(d)
+        j = next((int(k) for k in order if int(k) not in used), None)
+        if j is not None and d[j] < tol_ns:
+            used.add(j)
+            pairs.append((i, j))
+            resid.append(float(ft[j] - t))
+        elif float(d[order[0]]) < tol_ns:
+            n_merged += 1          # nearest peak within tol but claimed
+        else:
+            n_missed += 1
+    recognized = (exactly_n is not None
+                  and ft.size == exactly_n
+                  and len(pairs) == tt.size)
+    return {"matched_pairs": pairs, "n_true": int(tt.size),
+            "n_found": int(ft.size), "n_matched": len(pairs),
+            "residuals_ns": np.asarray(resid, dtype=float),
+            "n_merged": int(n_merged), "n_missed": int(n_missed),
+            "recognized": bool(recognized)}
+
+
 def score_run(produced_csv: Path | str,
               truth_csv: Path | str,
-              mode: Literal["area", "hits"],
+              mode: Literal["area", "hits", "hits-multi"],
               weights: Optional[ScoringWeights] = None,
+              match_tol_ns: float = 15.0,
               ) -> Dict[str, float]:
     """Score one (produced, truth) pair.
 
@@ -69,6 +128,12 @@ def score_run(produced_csv: Path | str,
     if w.exclude_saturated and "saturated" in truth.columns:
         truth = truth[~truth["saturated"]].copy()
     n_truth = int(len(truth))
+
+    # Multi-pulse truth (pulse_id column) auto-upgrades "hits" scoring to the
+    # per-pulse mode — the peak_id==1 single-hit matcher caps efficiency at
+    # ~1/n_pulses on pileup truth by construction (0–20 PE re-scope).
+    if mode == "hits" and "pulse_id" in truth.columns:
+        mode = "hits-multi"
 
     produced = pd.read_csv(produced_csv)
     if len(produced) == 0:
@@ -164,8 +229,74 @@ def score_run(produced_csv: Path | str,
             timing_sigma_ns=timing_sigma,
             timing_bias_ns=timing_bias,
         )
+    elif mode == "hits-multi":
+        # Per-pulse scoring against multi-pulse truth (0–20 PE re-scope):
+        # greedy time-matching per (event, branch), then per-pulse timing,
+        # ABSOLUTE per-pulse charge accuracy (charge is honestly pVs and
+        # truth is pVs since the 2026-07-28 linearization), split/merge rates.
+        prod = produced.copy()
+        if "success" in prod.columns:
+            prod = prod[prod["success"] == True]     # noqa: E712
+        prod = prod.rename(columns={"entry": "event"})
+        has_thalf = "t_half" in prod.columns
+        n_matched = 0
+        n_found_total = 0
+        n_merged = 0
+        resid_tpeak: list = []
+        resid_thalf: list = []
+        ratios: list = []
+        for (ev, br), tg in truth.groupby(["event", "branch"]):
+            fg = prod[(prod["event"] == ev) & (prod["branch"] == br)]
+            n_found_total += len(fg)
+            m = match_pulses(tg["true_center_ns"].values,
+                             fg["t_peak"].values, tol_ns=match_tol_ns)
+            n_matched += m["n_matched"]
+            n_merged += m["n_merged"]
+            resid_tpeak.extend(m["residuals_ns"].tolist())
+            for it, jf in m["matched_pairs"]:
+                trow, frow = tg.iloc[it], fg.iloc[jf]
+                r = float(frow["charge"]) / float(trow["true_charge_pVs"])
+                if np.isfinite(r):
+                    ratios.append(r)
+                if has_thalf and np.isfinite(frow["t_half"]):
+                    resid_thalf.append(float(frow["t_half"])
+                                       - float(trow["true_center_ns"]))
+        eff = n_matched / n_truth if n_truth else 0.0
+        ratios_arr = np.asarray(ratios, dtype=float)
+        rt = np.asarray(resid_tpeak, dtype=float)
+        rh = np.asarray(resid_thalf, dtype=float)
+
+        def _mad_sigma(x):
+            return (float(1.4826 * np.median(np.abs(x - np.median(x))))
+                    if x.size else float("nan"))
+
+        if ratios_arr.size:
+            ratio_med = float(np.median(ratios_arr))
+            rel = ratios_arr / ratio_med - 1.0
+            bias, scatter = float(np.mean(rel)), float(np.std(rel))
+            ratio_mean = float(np.mean(ratios_arr))
+        else:
+            ratio_med = bias = scatter = ratio_mean = float("nan")
+        out = dict(
+            n_truth=n_truth, n_matched=n_matched, efficiency=eff,
+            charge_bias=bias, charge_scatter=scatter,
+            charge_ratio_median=ratio_med,
+            # ABSOLUTE per-pulse charge scale (vs 1.0) — the linearity check
+            # the median-normalized bias/scatter cannot see.
+            charge_ratio_mean=ratio_mean,
+            timing_sigma_ns=_mad_sigma(rt),
+            timing_bias_ns=(float(np.mean(rt)) if rt.size else float("nan")),
+            thalf_sigma_ns=_mad_sigma(rh),
+            # found peaks beyond the matched ones, per truth pulse (fragments)
+            split_rate=((n_found_total - n_matched) / n_truth
+                        if n_truth else float("nan")),
+            # truth pulses whose nearest peak was claimed by a neighbour
+            # (two hits reconstructed as one)
+            merge_rate=(n_merged / n_truth if n_truth else float("nan")),
+        )
     else:
-        raise ValueError(f"mode must be 'area' or 'hits', got {mode!r}")
+        raise ValueError(
+            f"mode must be 'area', 'hits' or 'hits-multi', got {mode!r}")
 
     out["score"] = _composite(out, w)
     return out
@@ -190,5 +321,8 @@ def _nan_metrics(n_truth: int, mode: str) -> Dict[str, float]:
         charge_ratio_median=float("nan"),
         width_fwhm_ns=float("nan"),
         timing_sigma_ns=float("nan"), timing_bias_ns=float("nan"),
+        # hits-multi keys (harmless NaN for area/hits consumers)
+        charge_ratio_mean=float("nan"), thalf_sigma_ns=float("nan"),
+        split_rate=float("nan"), merge_rate=float("nan"),
         score=float("inf"),
     )

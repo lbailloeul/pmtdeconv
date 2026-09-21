@@ -48,7 +48,6 @@ from PIL import Image
 from scipy.optimize import curve_fit
 from tqdm import tqdm
 
-SAT_LEVEL_MV = 950.0
 MIN_VMAX_MV = 30.0
 NSAMPLES_DEFAULT = 1024
 

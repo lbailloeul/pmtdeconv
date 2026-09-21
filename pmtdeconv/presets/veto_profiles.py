@@ -50,6 +50,19 @@ class VetoProfile:
     min_charge_purity: float
     baseline_search_end_ns: float = 600.0
     pad_ns: float = 18.0
+    # 0–20 PE re-scope (2026-07-28): multi-hit / benchmark knobs, all
+    # defaulting to the historical hardcoded behavior (byte-identical).
+    # `neighbor_min_ratio` — a neighbouring peak must reach this fraction of
+    # the current peak's height to cap its integration window (the invisible
+    # multi-hit charge-sharing parameter, now named).
+    neighbor_min_ratio: float = 0.1
+    # `window_extend_frac` — integration windows extend by this fraction of
+    # the pulse width on each side beyond the troughs (1.0 = legacy).
+    window_extend_frac: float = 1.0
+    # `baseline_sigma_scale` — multiplier on the absolute log-σ baseline pass
+    # threshold (7 mV @200 ns → 1.5 mV @64 ns anchors). >1 admits noisier
+    # detectors (e.g. the σ=12 mV `noisy` regime) into veto-on processing.
+    baseline_sigma_scale: float = 1.0
     # S8: catalog version stamp (recorded in provenance; "0" = the built-in
     # defaults). A file-backed profile written by `vetoes calibrate` carries the
     # date it was derived so a run records exactly which calibration it used.
@@ -74,6 +87,28 @@ WAVELET_HITS_PROFILE = VetoProfile(
     afterpulse_window_ns=40.0, afterpulse_height_ratio=5.0,
     post_sat_window_ns=50.0, post_sat_sigma_mult=3.0, post_sat_offset_ns=20.0,
     min_charge_purity=0.5,
+)
+
+# Neutral benchmark profile (0–20 PE re-scope, user-approved 2026-07-28):
+# wavelet_hits base with ONLY the multi-hit-hostile members relaxed, so
+# wavelet and STFT arms run under IDENTICAL thresholds and real small
+# companions of multi-hit bunches survive:
+#   no_trigger_amp 15→5 mV        (admit ~0.3 PE events at a 15 mV SPE)
+#   afterpulse_height_ratio 5→20  (stop deleting genuine 1:5 companions;
+#                                  still kills true afterpulses)
+#   min_charge_purity 0.5→0.25    (companions straddling deconv undershoot)
+# Everything else stays wavelet-strict (incl. the baseline gate — identical
+# for both denoisers = fair, even where lossy).
+BENCHMARK_HITS_PROFILE = VetoProfile(
+    name="benchmark_hits",
+    flat_frac_min=0.95, flat_k=4.0, spike_k=5.0,
+    max_baseline_adc=500.0, peak_height_adc=50.0,
+    no_trigger_amp=5.0, raw_snr_mult=10.0,
+    t_peak_min_ns=20.0, t_peak_max_ns=1400.0,
+    afterpulse_window_ns=40.0, afterpulse_height_ratio=20.0,
+    post_sat_window_ns=50.0, post_sat_sigma_mult=3.0, post_sat_offset_ns=20.0,
+    min_charge_purity=0.25,
+    version="1",
 )
 
 # Relaxed STFT-hits thresholds (the former silent override table).
@@ -121,7 +156,8 @@ class VetoProfileCatalog(Catalog):
         self._by_name[name] = artifact
 
 
-VETO_PROFILES = VetoProfileCatalog([WAVELET_HITS_PROFILE, STFT_HITS_PROFILE])
+VETO_PROFILES = VetoProfileCatalog([WAVELET_HITS_PROFILE, STFT_HITS_PROFILE,
+                                    BENCHMARK_HITS_PROFILE])
 
 
 # ─── S8: file-backed, versioned veto-profile catalog ────────────────────

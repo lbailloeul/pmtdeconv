@@ -1,55 +1,48 @@
 #!/usr/bin/env python3
-"""Regression tests against a deterministic synthetic ROOT fixture.
+"""Regression tests against deterministic synthetic ROOT fixtures.
 
-Guards against accidental byte drift in CSV outputs across refactors.
-The fixture is built by ``tests/fixtures/make_synth_root.py`` from a
-fixed RNG seed; the expected outputs are committed under
-``tests/fixtures/golden/``.
+Guards against accidental byte drift in CSV outputs across refactors. Each
+fixture is built from a fixed RNG seed by a ``tests/fixtures/make_synth_*.py``
+script; the expected outputs live under ``tests/fixtures/golden/``.
 
-A failure here means *something changed the bytes of a CSV output*.
-Either:
+**Neither the ROOT fixtures nor the goldens are committed** — both are
+gitignored. The ROOT files are large and regenerable; the golden bytes depend
+on the local numpy/scipy build, so a shared reference set would fail on other
+machines for reasons that have nothing to do with the code. Each checkout
+blesses its own set once, and byte-identity then guards refactors *within*
+that checkout.
 
-1. You introduced a real regression — fix the code.
-2. The change was deliberate (schema bump, defaults shift) — regenerate
-   the goldens by re-running the make commands at the bottom of this
-   file's docstring AND bump the matching schema version in
-   ``pmtdeconv/io/schemas.py``.
+On a fresh checkout, before running this suite::
 
-Coverage today (PR 1 + PR 2 / decision 9):
-- ``pmtdeconv raw_area mqana`` against synth fixture → ``area_mqana_run0.csv``
-- ``pmtdeconv waveform`` against synth fixture → ``deconv_area_run0.csv``
-- ``pmtdeconv pulse`` against synth fixture → ``deconv_pulse.csv``
-  (added after the PR 2 / decision 9 extraction; the parameterized
-  data_root + out_dir unblocked it.)
+    python tests/fixtures/bless_goldens.py
 
-NOT covered yet:
-- ``pmtdeconv raw_area drs`` — needs a DRSprocessing-format fixture (object
-  tree with area_<board>_<ch> branches); deferred.
+That builds any missing ROOT fixtures and regenerates all 12 goldens. Every
+recipe lives in :mod:`tests.fixtures.golden_spec` — the single source of
+truth, kept honest by ``test_golden_spec_matches_tests`` below.
 
-Regenerating goldens after a deliberate change::
+A failure here means *something changed the bytes of a CSV output*. Either:
 
-    python tests/fixtures/make_synth_root.py
-    python -m pmtdeconv raw_area mqana --dataset na22 --data-root tests/fixtures \\
-        --runs 0 --out-dir tests/fixtures/golden/area_mqana --log-level quiet
-    python -m pmtdeconv waveform --dataset na22 --data-root tests/fixtures \\
-        --runs 0 --out-dir tests/fixtures/golden/deconv_area --log-level quiet
-    python -m pmtdeconv pulse --dataset na22 \\
-        --preset na22-timewalk-winning-2026-05 --data-root tests/fixtures \\
-        --runs 0 --out-dir tests/fixtures/golden/deconv_pulses --log-level quiet
-    python -m pmtdeconv pulse --dataset na22 --vetoes --data-root tests/fixtures \\
-        --runs 0 --out-dir tests/fixtures/golden/deconv_pulses_vetoon --log-level quiet
-    cp tests/fixtures/golden/area_mqana/area_mqana_run0.csv \\
-       tests/fixtures/golden/area_mqana_run0.csv
-    cp tests/fixtures/golden/deconv_area/areas_run0.csv \\
-       tests/fixtures/golden/deconv_area_run0.csv
-    cp tests/fixtures/golden/deconv_pulses/deconv_pulse.csv \\
-       tests/fixtures/golden/deconv_pulses_run0.csv
-    cp tests/fixtures/golden/deconv_pulses_vetoon/all_results.csv \\
-       tests/fixtures/golden/deconv_pulses_vetoon_run0.csv
+1. You introduced a real regression — fix the code, do NOT re-bless.
+2. The change was deliberate (schema bump, defaults shift) — re-bless with
+   ``python tests/fixtures/bless_goldens.py --force``, diff the result to
+   confirm every changed byte is intended, bump the matching schema version in
+   ``pmtdeconv/io/schemas.py``, and add an entry to
+   ``tests/fixtures/GOLDEN_PROVENANCE.md`` (tracked; the bytes are not).
+
+Coverage (12 goldens over four dataset formats):
+
+- flat (``flattened_Run0.root``) — ``raw-area mqana``, ``area`` (padded and
+  unpadded), ``hits`` (preset / vetoes-on / STFT)
+- object (``MilliQan_Run835.99_triple.root``) — ``raw-area mqana``, ``area``,
+  ``hits``
+- DRSprocessing (``processed/Run0.root``) — ``raw-area drs``
+- offline pulse list (``MilliQan_Run99.synth_triple_offline.root``) —
+  ``raw-area offline`` (area + timing CSVs)
 """
 from __future__ import annotations
 
 import filecmp
+import re
 import shutil
 import subprocess
 import sys
@@ -98,8 +91,9 @@ def _diff_csv_byte_identical(produced: Path, golden: Path) -> None:
         raise AssertionError(f"produced CSV does not exist: {produced}")
     if not golden.exists():
         raise AssertionError(
-            f"golden CSV does not exist: {golden} — regenerate the goldens "
-            f"and commit them (see test_golden_fixture.py docstring).")
+            f"golden CSV does not exist: {golden}\n"
+            f"Goldens are gitignored and blessed per checkout — run:\n"
+            f"    python tests/fixtures/bless_goldens.py")
     if filecmp.cmp(produced, golden, shallow=False):
         return
     # Show the first diverging lines for debugging
@@ -119,15 +113,16 @@ def _diff_csv_byte_identical(produced: Path, golden: Path) -> None:
     raise AssertionError(
         f"CSV byte-mismatch:\n  {produced}\n  vs\n  {golden}\n"
         f"first differing lines:\n" + "\n".join(diffs)
-        + "\n\n(If the change is intentional, regenerate the goldens — "
-        "see the test file's docstring.)")
+        + "\n\n(If the change is intentional, re-bless with "
+        "`python tests/fixtures/bless_goldens.py --force`, then diff the "
+        "result to confirm every changed byte is intended.)")
 
 
 def test_raw_area_mqana_golden(tmp_path, synth_root_exists):
     """`pmtdeconv raw_area mqana` against the synth fixture must match the
     committed golden CSV byte-for-byte."""
     out_dir = tmp_path / "raw_area_mqana"
-    _run_pmtdeconv("raw_area", "mqana",
+    _run_pmtdeconv("raw-area", "mqana",
                    "--dataset", "na22",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "0",
@@ -141,7 +136,7 @@ def test_waveform_golden(tmp_path, synth_root_exists):
     """`pmtdeconv waveform` against the synth fixture must match the
     committed golden CSV byte-for-byte."""
     out_dir = tmp_path / "waveform"
-    _run_pmtdeconv("waveform",
+    _run_pmtdeconv("area",
                    "--dataset", "na22",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "0",
@@ -161,16 +156,17 @@ def test_pulse_golden(tmp_path, synth_root_exists):
     chain. ``test_pulse_vetoon_golden`` covers that.
     """
     out_dir = tmp_path / "pulse"
-    _run_pmtdeconv("pulse",
+    _run_pmtdeconv("hits",
                    "--dataset", "na22",
                    "--preset", "na22-timewalk-winning-2026-05",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "0",
                    out_dir=out_dir)
-    produced = out_dir / "deconv_pulse.csv"
+    produced = out_dir / "hits.csv"
     golden = GOLDEN_DIR / "deconv_pulses_run0.csv"
     _diff_csv_byte_identical(produced, golden)
-    assert (out_dir / "deconv_pulses.csv").exists()
+    # The byte-identical `deconv_pulses.csv` copy was dropped 2026-09-14.
+    assert not (out_dir / "deconv_pulses.csv").exists()
 
 
 def test_pulse_vetoon_golden(tmp_path, synth_root_exists):
@@ -187,7 +183,7 @@ def test_pulse_vetoon_golden(tmp_path, synth_root_exists):
     survive).
     """
     out_dir = tmp_path / "pulse_vetoon"
-    _run_pmtdeconv("pulse",
+    _run_pmtdeconv("hits",
                    "--dataset", "na22",
                    "--vetoes",
                    "--data-root", str(FIXTURE_DIR),
@@ -212,7 +208,7 @@ def test_pulse_stft_golden(tmp_path, synth_root_exists):
     byte-identical.
     """
     out_dir = tmp_path / "pulse_stft"
-    _run_pmtdeconv("pulse", "--denoiser", "stft",
+    _run_pmtdeconv("hits", "--denoiser", "stft",
                    "--dataset", "na22",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "0",
@@ -234,7 +230,7 @@ def test_waveform_fftpad_golden(tmp_path, synth_root_exists):
     the deconvolution).
     """
     out_dir = tmp_path / "waveform_fftpad"
-    _run_pmtdeconv("waveform", "--fft-pad",
+    _run_pmtdeconv("area", "--fft-pad",
                    "--dataset", "na22",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "0",
@@ -270,7 +266,7 @@ def test_raw_area_mqana_object_golden(tmp_path, synth_object_exists):
     Locks down the PR 4 object-format reader.
     """
     out_dir = tmp_path / "object_raw_area_mqana"
-    _run_pmtdeconv("raw_area", "mqana",
+    _run_pmtdeconv("raw-area", "mqana",
                    "--dataset", "lanl_835",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "99",
@@ -285,7 +281,7 @@ def test_waveform_object_golden(tmp_path, synth_object_exists):
     object-format fixture must match the committed golden byte-for-byte.
     """
     out_dir = tmp_path / "object_waveform"
-    _run_pmtdeconv("waveform",
+    _run_pmtdeconv("area",
                    "--dataset", "lanl_835",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "99",
@@ -308,17 +304,18 @@ def test_pulse_object_golden(tmp_path, synth_object_exists):
     loudly for *new* untemplated runs.
     """
     out_dir = tmp_path / "object_pulse"
-    _run_pmtdeconv("pulse",
+    _run_pmtdeconv("hits",
                    "--dataset", "lanl_835",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "99",
                    "--no-vetoes",
                    "--allow-generic-fallback",
                    out_dir=out_dir)
-    produced = out_dir / "deconv_pulse.csv"
+    produced = out_dir / "hits.csv"
     golden = GOLDEN_DIR / "object_deconv_pulses_run99.csv"
     _diff_csv_byte_identical(produced, golden)
-    assert (out_dir / "deconv_pulses.csv").exists()
+    # The byte-identical `deconv_pulses.csv` copy was dropped 2026-09-14.
+    assert not (out_dir / "deconv_pulses.csv").exists()
 
 
 # ─── DRSprocessing-format golden (step 8 test-gap fill) ──────────
@@ -348,7 +345,7 @@ def test_raw_area_drs_golden(tmp_path, synth_drs_exists):
     out_dir = tmp_path / "raw_area_drs"
     _run_pmtdeconv("raw-area", "drs",
                    "--dataset", "na22",
-                   "--root", str(DRS_ROOT),
+                   "--file", str(DRS_ROOT),
                    "--runs", "0",
                    out_dir=out_dir)
     produced = out_dir / "area_drs_run0.csv"
@@ -379,9 +376,9 @@ def test_raw_area_offline_area_golden(tmp_path, synth_offline_exists):
     """`pmtdeconv raw_area offline` against the synth offline fixture
     must produce a byte-identical area CSV."""
     out_dir = tmp_path / "raw_area_offline"
-    _run_pmtdeconv("raw_area", "offline",
+    _run_pmtdeconv("raw-area", "offline",
                    "--dataset", "lanl_835",
-                   "--root", str(OFFLINE_ROOT),
+                   "--file", str(OFFLINE_ROOT),
                    "--runs", "99",
                    out_dir=out_dir)
     produced = out_dir / "area_offline_run99.csv"
@@ -393,9 +390,9 @@ def test_raw_area_offline_hit_golden(tmp_path, synth_offline_exists):
     """Same run must also produce a byte-identical pulse CSV
     (primary-pulse rows, peak_id=1, t_peak from default time field)."""
     out_dir = tmp_path / "raw_area_offline_hits"
-    _run_pmtdeconv("raw_area", "offline",
+    _run_pmtdeconv("raw-area", "offline",
                    "--dataset", "lanl_835",
-                   "--root", str(OFFLINE_ROOT),
+                   "--file", str(OFFLINE_ROOT),
                    "--runs", "99",
                    out_dir=out_dir)
     produced = out_dir / "offline_hit_results_run99.csv"
@@ -403,5 +400,69 @@ def test_raw_area_offline_hit_golden(tmp_path, synth_offline_exists):
     _diff_csv_byte_identical(produced, golden)
 
 
+# ─── anti-rot: the bless recipe must cover exactly these goldens ───
+
+def test_golden_spec_matches_tests():
+    """``tests/fixtures/golden_spec.py`` must register a regeneration recipe
+    for exactly the goldens this module compares against.
+
+    Why this exists: between 2026-05 and 2026-09 the regeneration recipe
+    (then a prose block in this module's docstring) covered 4 of 12 goldens,
+    and claimed the goldens were committed when they are gitignored. A fresh
+    checkout therefore could not reproduce the suite. Keeping the recipe as
+    DATA and asserting it matches the tests makes that drift impossible: add
+    a golden test without a recipe and this fails.
+    """
+    sys.path.insert(0, str(FIXTURE_DIR))
+    from golden_spec import CASES, golden_names
+
+    source = Path(__file__).read_text()
+    # Only .csv names, so the regex literal in this test doesn't match itself.
+    referenced = {m for m in re.findall(r'GOLDEN_DIR / "([^"]+)"', source)
+                  if m.endswith(".csv")}
+    registered = golden_names()
+
+    assert referenced, "no GOLDEN_DIR references found — did the tests move?"
+    missing = referenced - registered
+    assert not missing, (
+        "golden(s) compared by a test but with no recipe in golden_spec.py "
+        f"(so `bless_goldens.py` cannot regenerate them): {sorted(missing)}")
+    extra = registered - referenced
+    assert not extra, (
+        "golden_spec.py registers recipe(s) no test compares against — "
+        f"stale entries: {sorted(extra)}")
+    assert len(CASES) == len(registered), \
+        "golden_spec.CASES has duplicate golden filenames"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ─── removed verb aliases (2026-09-14) ────────────────────────────
+
+def test_removed_aliases_name_their_replacement(tmp_path, synth_root_exists):
+    """`pulse` / `waveform` / `raw_area` were removed after their deprecation
+    cycle. Each must fail with the migration instruction rather than argparse's
+    bare "invalid choice" — difflib cannot suggest `hits` for `pulse`.
+    """
+    for alias, canonical in (("pulse", "hits"),
+                             ("waveform", "area"),
+                             ("raw_area", "raw-area")):
+        res = subprocess.run(
+            [PYBIN, "-m", "pmtdeconv", alias, "--dataset", "na22"],
+            cwd=REPO_ROOT, capture_output=True, text=True)
+        assert res.returncode != 0, f"`{alias}` must not run"
+        combined = res.stdout + res.stderr
+        assert canonical in combined, (
+            f"`{alias}` must point at `{canonical}`; got:\n{combined}")
+
+
+def test_canonical_verbs_still_work(tmp_path, synth_root_exists):
+    """The replacements accept the same flags (--dry-run: no ROOT I/O)."""
+    for verb in ("hits", "area"):
+        out_dir = tmp_path / verb
+        _run_pmtdeconv(verb, "--dataset", "na22",
+                       "--data-root", str(FIXTURE_DIR), "--runs", "0",
+                       "--dry-run", out_dir=out_dir)
+        assert (out_dir / "manifest.json").exists()

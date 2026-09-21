@@ -36,7 +36,7 @@ from pmtdeconv.presets import resolve_settings
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    g = parser.add_argument_group("raw_area offline")
+    g = parser.add_argument_group("raw-area offline")
     g.add_argument("--time-field", choices=ALLOWED_TIME_FIELDS,
                    default=DEFAULT_TIME_FIELD,
                    help=f"Which time observable to write as t_peak in the "
@@ -45,20 +45,23 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     # internally when not overridden (the LANL offline tree name).
     g.add_argument("--offline-glob", type=str, default=None,
                    help="Override the dataset's offline_file_glob.")
-    g.add_argument("--root", type=str, nargs="+", default=None,
-                   help="Explicit offline ROOT file(s). Skips the "
+    g.add_argument("--file", dest="file", type=str, nargs="+", default=None,
+                   help="Exact offline ROOT FILE(s) to read. Skips the "
                         "preset's offline_data_dir lookup.")
+    # Renamed from --root on 2026-09-18 (it named the format, not the role).
+    from pmtdeconv.cli import add_renamed_alias
+    add_renamed_alias(g, "--root", "--file", dest="file", nargs="+")
 
 
 def _resolve_offline_files(args, settings, run_num: int) -> List[Path]:
     """Return sorted sub-file paths matching ``run_num``."""
-    if args.root:
-        return [Path(p) for p in args.root]
+    if args.file:
+        return [Path(p) for p in args.file]
     data_dir = settings.offline_data_dir
     if data_dir is None:
         raise SystemExit(
             f"Dataset {settings.dataset!r} has no offline_data_dir "
-            "configured. Pass --root <path(s)> explicitly, or pick a "
+            "configured. Pass --file <path(s)> explicitly, or pick a "
             "dataset preset with offline files (lanl_835, lanl_movedBar).")
     data_dir = Path(data_dir)
     if not data_dir.exists():
@@ -76,7 +79,7 @@ def run(args: argparse.Namespace) -> int:
     out_dir = settings.out_dir or raw_area_output_dir(settings, "offline")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    if maybe_dry_run_exit(subcommand="raw_area offline", settings=settings,
+    if maybe_dry_run_exit(subcommand="raw-area offline", settings=settings,
                           provenance=provenance, out_dir=out_dir,
                           duration_seconds=time.time() - t0):
         return 0
@@ -185,7 +188,7 @@ def run(args: argparse.Namespace) -> int:
     manifest_path = (Path(settings.manifest_path)
                      if settings.manifest_path else (out_dir / "manifest.json"))
     write_manifest(
-        subcommand="raw_area offline",
+        subcommand="raw-area offline",
         settings=settings, provenance=provenance,
         inputs=inputs_meta, outputs=outputs_meta,
         stats=stats,

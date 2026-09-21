@@ -7,14 +7,11 @@ event. This matches the explicit ``baseline_failed_flag`` path added to
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-from typing import NamedTuple, Tuple
+from typing import NamedTuple
 
 import numpy as np
 
-# utils.py lives at the project root one level above the pmtdeconv pkg
-from pmtdeconv.utils import baseline_noise_bestwindow            # noqa: E402
+from pmtdeconv.core.dsp import baseline_noise_bestwindow
 
 DEFAULT_FALLBACK_SAMPLES = 100
 

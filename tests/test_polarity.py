@@ -74,3 +74,47 @@ def test_object_polarity_negation_equivalence():
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ─── the CLI hop (2026-09-14) ─────────────────────────────────────
+
+def test_polarity_flag_exists_and_reaches_settings():
+    """``--polarity`` must exist on the CLI *and* land in Settings.
+
+    Regression guard for the inverse of the usual flag-plumbing bug: the
+    ``CLI_TO_SETTINGS`` entry, the ``Settings`` field, the ``Detector`` field
+    and ``_apply_polarity`` all existed, but **no command defined the argparse
+    flag** — so negative-going data was reachable only through a dataset preset
+    or a YAML card. Asserting both halves keeps either from rotting alone.
+    """
+    import argparse
+    from pmtdeconv.cli import add_common_args
+    from pmtdeconv.presets import CLI_TO_SETTINGS, resolve_settings
+
+    assert CLI_TO_SETTINGS.get("polarity") == "polarity", \
+        "polarity lost its CLI_TO_SETTINGS mapping"
+
+    parser = argparse.ArgumentParser()
+    add_common_args(parser)
+
+    # argparse must accept the negative value (it parses `-1` as a value only
+    # because no option string looks like a negative number — pin that).
+    args = parser.parse_args(["--data-root", ".", "--polarity", "-1"])
+    assert args.polarity == -1
+
+    settings, provenance = resolve_settings(args)
+    assert settings.polarity == -1
+    assert provenance["polarity"] == "cli"
+
+
+def test_polarity_flag_is_absent_unless_passed():
+    """Omitting the flag must leave the dataset/card value untouched —
+    the flag uses ``argparse.SUPPRESS``, so goldens stay byte-identical."""
+    import argparse
+    from pmtdeconv.cli import add_common_args
+
+    parser = argparse.ArgumentParser()
+    add_common_args(parser)
+    args = parser.parse_args(["--data-root", "."])
+    assert not hasattr(args, "polarity"), \
+        "--polarity must default to SUPPRESS so it cannot override a card"

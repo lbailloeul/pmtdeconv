@@ -9,7 +9,7 @@ far from the real cause.
 These helpers instead **search the common layouts** for a run's file and, when
 nothing is found, raise a ``SystemExit`` that names every path searched and how
 to point the tool at the data (``--data-root`` / ``$PMTDECONV_DATA_ROOT`` / the
-explicit ``--root``/``--area-root`` file flag).
+explicit ``--file``/``--area-file`` flag).
 
 Two file kinds:
   - ``"flat"`` — the flattened waveform file ``flattened_Run<N>.root`` (hits, area,
@@ -29,7 +29,7 @@ _KIND_LABEL = {
 }
 # Explicit single-file override flag offered to the user per kind (None = the
 # flat path has no single-file flag; the remedy is --data-root).
-_KIND_FILE_FLAG = {"flat": None, "drs": "--root / --area-root"}
+_KIND_FILE_FLAG = {"flat": None, "drs": "--file / --area-file"}
 
 
 def _flat_candidates(data_root: Path, run) -> List[Path]:
@@ -87,7 +87,7 @@ def resolve_run_file(data_root, run, *, kind: str,
                      explicit: Optional[str] = None) -> Optional[Path]:
     """Return the first existing candidate ROOT for ``run``, or ``None``.
 
-    ``explicit`` (an exact ``--root``/``--area-root`` path) wins when given and
+    ``explicit`` (an exact ``--file``/``--area-file`` path) wins when given and
     is returned only if it exists.
     """
     if explicit:

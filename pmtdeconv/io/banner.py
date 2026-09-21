@@ -44,6 +44,14 @@ def format_run_banner(subcommand: str, settings: Any,
         tail += f"  git {sha}{dirty}"
         if branch:
             tail += f" @{branch}"
+    if git.get("dirty"):
+        # Loud on purpose: a run from modified code cannot be reproduced from
+        # the SHA the manifest records. The manifest lists the files.
+        n = git.get("dirty_count") or len(git.get("dirty_files") or [])
+        lines.append(f"│  ⚠ NOT REPRODUCIBLE FROM GIT: {n} uncommitted change(s) "
+                     f"to pmtdeconv since {sha or 'HEAD'}.")
+        lines.append("│    Commit (and tag) before any run you will report; "
+                     "manifest git.dirty_files lists them.")
     lines.append(f"└─ {tail}")
     return "\n".join(lines)
 

@@ -87,7 +87,7 @@ def test_timewalk_run_cli_smoke(tmp_path):
     out_dir = tmp_path / "tw"
     cmd = [PYBIN, "-m", "pmtdeconv", "timewalk", "run",
            "--dataset", "na22", "--runs", "0",
-           "--area-csv", str(area_csv), "--pulse-csv", str(pulse_csv),
+           "--area-csv", str(area_csv), "--hits-csv", str(pulse_csv),
            "--a-ref", str(_A_REF_LO), str(_A_REF_HI),
            "--a-scan-start", "0", "--a-scan-stop", "200", "--a-scan-step", "50",
            "--out-dir", str(out_dir), "--log-level", "quiet"]

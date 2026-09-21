@@ -6,7 +6,8 @@
   - :mod:`pmtdeconv.core.dsp`      — deconvolution, denoising, baseline
   - :mod:`pmtdeconv.core.peaks`    — integration windows, FWHM, vetoes
 
-``pmtdeconv.utils`` remains a thin facade re-exporting all of these, so the
-package modules and the ~35 legacy scripts keep importing from the same place
-and the byte-identical golden fixtures are unaffected.
+**This package is the single source of truth for the math.** Every module
+inside ``pmtdeconv`` imports these names directly from ``core`` (2026-09-04);
+:mod:`pmtdeconv.utils` is a compatibility shim that re-exports them for the
+local, gitignored ``legacy/`` scripts only. New code imports from ``core``.
 """

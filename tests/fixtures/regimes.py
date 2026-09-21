@@ -127,6 +127,24 @@ REGIMES: Dict[str, Regime] = {
         description="2-3 overlapping pulses/event, 5-30 ns apart — "
                     "multi-hit separation + per-pulse charge truth",
     ),
+    # ── 0–20 PE re-scope regimes (2026-07-28): the target population. ──
+    "pileup_lowpe": Regime(
+        name="pileup_lowpe",
+        amp_ch1_lo=15.0, amp_ch1_hi=150.0,
+        noise_sigma_mv=1.2, clip_mv=None,
+        n_pulses=3, sep_lo_ns=5.0, sep_hi_ns=30.0,
+        description="low-PE multi-hit bunches (~1-10 PE at a 15 mV SPE), "
+                    "2-3 pulses 5-30 ns apart — the re-scope's preferred "
+                    "benchmark population",
+    ),
+    "pileup_dense": Regime(
+        name="pileup_dense",
+        amp_ch1_lo=80.0, amp_ch1_hi=200.0,
+        noise_sigma_mv=1.2, clip_mv=None,
+        n_pulses=2, sep_lo_ns=2.0, sep_hi_ns=10.0,
+        description="exactly-two-pulse resolving-power scan (2-10 ns "
+                    "separations) — the recognition-efficiency-vs-Δt input",
+    ),
 }
 
 

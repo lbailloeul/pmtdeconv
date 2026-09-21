@@ -20,7 +20,7 @@ from pmtdeconv.presets import resolve_settings
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    g = parser.add_argument_group("waveform")
+    g = parser.add_argument_group("area")
     g.add_argument("--template", type=str, default=None,
                    help="SPE template CSV path. Default: dataset's preset.")
     g.add_argument("--sig-start", type=int, default=10)
@@ -31,7 +31,27 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--wlevel", type=int, default=None)
     g.add_argument("--wmode", type=str, default=None)
     g.add_argument("--wthresh-k", type=float, default=None)
-    g.add_argument("--fft-pad", action="store_true")
+    # default=None (not False): "fft_pad" is in CLI_TO_SETTINGS for the hits
+    # path, and _apply_cli must see "not passed" — a False default would stamp
+    # a bogus "cli" provenance on every area run. Falsy None keeps the area
+    # goldens byte-identical (AreaMode only truth-tests it).
+    g.add_argument("--fft-pad", action="store_true", default=None)
+    g.add_argument("--spe-charge", dest="spe_charge", type=str, nargs="+",
+                   default=None, metavar="BR=PVS",
+                   help="Per-branch 1-PE charge anchor in pVs "
+                        "(see `gain calibrate`).")
+    g.add_argument("--pe-band", dest="pe_band", type=float, nargs=2,
+                   default=None, metavar=("LO", "HI"),
+                   help="Deconvolution applicability window in nPE "
+                        "(default 0 20).")
+    g.add_argument("--in-regime-only", dest="in_regime_only",
+                   action="store_true", default=None,
+                   help="Process ONLY waveforms with raw nPE inside --pe-band "
+                        "(needs a spe_charge anchor; see `gain calibrate`).")
+    g.add_argument("--entry-list", dest="entry_list", type=str, default=None,
+                   metavar="CSV",
+                   help="Process only the entries listed (CSV with `entry` "
+                        "column or one index per line).")
     g.add_argument("--wrap-ratio", type=float, default=0.5)
     g.add_argument("--wrap-abs-k", type=float, default=0.0)
     g.add_argument("--afterpulse-window", type=float, default=0.0)
@@ -83,7 +103,7 @@ def run(args: argparse.Namespace) -> int:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if maybe_dry_run_exit(subcommand="waveform", settings=settings,
+    if maybe_dry_run_exit(subcommand="area", settings=settings,
                           provenance=provenance, out_dir=out_dir,
                           duration_seconds=time.time() - t0):
         return 0
@@ -98,7 +118,27 @@ def run(args: argparse.Namespace) -> int:
     if template_csv is not None and Path(template_csv).exists():
         inputs_meta.append({"role": "template_csv", "path": str(template_csv)})
 
-    stats = {"runs": [], "total_rows": 0, "format": settings.format}
+    # 0–20 PE regime flag/gate (mirrors hits): resolve the PE anchor once.
+    from pmtdeconv.pipeline.gain import Gain
+    gain = Gain.from_settings(settings, provenance, command="area")
+    if settings.in_regime_only and not gain.resolved:
+        raise SystemExit(
+            "--in-regime-only needs a per-branch 1-PE charge anchor "
+            "(card `spe_charge` / --spe-charge / gain catalog). "
+            "Fit one with `pmtdeconv gain calibrate`.")
+
+    entry_keep = None
+    if getattr(settings, "entry_list", None):
+        from pmtdeconv.pipeline.event_source import load_entry_list
+        entry_keep = load_entry_list(settings.entry_list)
+        print(f"  entry-list filter: {len(entry_keep)} entries")
+
+    stats = {"runs": [], "total_rows": 0, "format": settings.format,
+             "pe_gate": {"pe_band": list(settings.pe_band),
+                         "in_regime_only": bool(settings.in_regime_only)},
+             **({"gain": {"source": gain.provenance.source,
+                          "spe_charge_pvs": gain.per_branch}}
+                if gain is not None else {})}
     n_intervals = args.n_intervals
     for run_num in runs:
         if is_object_format:
@@ -139,7 +179,7 @@ def run(args: argparse.Namespace) -> int:
             t_peak_min_ns=args.t_peak_min_ns,
             afterpulse_window_ns=args.afterpulse_window,
             afterpulse_height_ratio=args.afterpulse_ratio,
-            fft_pad=args.fft_pad,
+            fft_pad=bool(args.fft_pad),
             wrap_ratio=args.wrap_ratio,
             wrap_abs_k=args.wrap_abs_k,
             entry_stop=settings.entry_stop,
@@ -147,6 +187,9 @@ def run(args: argparse.Namespace) -> int:
             branches_keep=(settings.branch_pattern
                            if isinstance(settings.branch_pattern, list)
                            else None),
+            gain=gain, pe_band=tuple(settings.pe_band),
+            in_regime_only=bool(settings.in_regime_only),
+            entry_keep=entry_keep,
         )
         if is_object_format:
             df = process_run_object(**common_kwargs,
@@ -164,8 +207,9 @@ def run(args: argparse.Namespace) -> int:
         # Deconv-area output = the raw-area schema + the per-waveform `saturated`
         # data-quality flag (plateau-detected). Kept off the shared AREA_COLUMNS
         # so raw-area mqana/drs are unaffected.
-        cols = list(AREA_COLUMNS) + (
-            ["saturated"] if "saturated" in df.columns else [])
+        cols = list(AREA_COLUMNS) + [
+            c for c in ("saturated", "npe_raw", "in_regime")
+            if c in df.columns]
         df_passed = df[df["interval"] >= 0][cols]
         df_passed.to_csv(csv_path, index=False)
         outputs_meta.append({"role": "area_csv", "path": str(csv_path)})
@@ -196,7 +240,7 @@ def run(args: argparse.Namespace) -> int:
     manifest_path = (Path(settings.manifest_path)
                      if settings.manifest_path else (out_dir / "manifest.json"))
     write_manifest(
-        subcommand="waveform",
+        subcommand="area",
         settings=settings,
         provenance=provenance,
         inputs=inputs_meta,

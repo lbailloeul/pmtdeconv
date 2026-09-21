@@ -8,8 +8,10 @@ the per-event sample-max (typical width ~35 ns total, i.e. ±~17.5 ns
 about the peak).
 
 This module implements the narrow-window definition. Units are mV·ns.
-Sign convention follows ``raw_area_Na22``: ``area = -Σ(s_i - baseline)·dt``
-so positive-going pulses give positive area.
+Sign convention: the baseline-subtracted waveform is multiplied by
+``polarity`` (±1) so pulses are positive-going, then
+``area = Σ(polarity·(s_i - baseline))·dt`` — real signals give positive
+area for either raw polarity.
 
 Reverting to the legacy wide-window behavior is exposed via
 ``window_ns=None`` (the caller can also pass ``signal_start``/``signal_end``

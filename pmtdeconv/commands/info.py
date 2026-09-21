@@ -1,23 +1,27 @@
-"""``pmtdeconv info ...`` — read-only introspection of registries.
+"""``pmtdeconv info ...`` — inspect a detector, a template, or a data file.
 
 Leaves:
 - ``info datasets`` — lists every DatasetPreset with key fields.
-- ``info presets`` — lists every named ConfigPreset with overrides.
-- ``info template <path>`` — describes a CSV template's schema +
-  channels.
-- ``info artifacts`` — indexes existing output manifests.
+- ``info template <path>`` — describes a CSV template's schema + channels.
+- ``info offline-file <path>`` — summarizes a LANL pulse-list ROOT file.
 
-No ROOT I/O. No side effects. Pure listing for discoverability so
-``pmtdeconv info presets`` works as user-facing documentation.
+``info`` covers things that are NOT settings and NOT outputs. The two leaves
+that were (2026-09-14) moved out:
+
+- ``info presets``  -> ``config show`` (no name lists every preset)
+- ``info artifacts`` -> ``results index``
+
+so each verb owns one domain: ``info`` = detectors and files, ``config`` =
+settings, ``results`` = outputs.
+
+No ROOT I/O beyond reading the file you name. No side effects.
 """
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from pmtdeconv import PROJECT_ROOT
 from pmtdeconv.io.templates import load_template
-from pmtdeconv.presets.configs import CONFIGS
 from pmtdeconv.presets.datasets import DATASETS
 
 
@@ -37,11 +41,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_common_args(p_datasets)
     p_datasets.set_defaults(_info_fn=_info_datasets)
 
-    p_presets = sub.add_parser("presets",
-                               help="List every named configuration preset")
-    add_common_args(p_presets)
-    p_presets.set_defaults(_info_fn=_info_presets)
-
     p_tmpl = sub.add_parser("template",
                             help="Describe a SPE template CSV")
     p_tmpl.add_argument("path", type=str, help="Path to a template CSV.")
@@ -55,22 +54,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                        help="Events sampled for channel detection (default 50).")
     add_common_args(p_off)
     p_off.set_defaults(_info_fn=_info_offline_file)
-
-    p_art = sub.add_parser("artifacts",
-                           help="Index existing output manifests")
-    p_art.add_argument("--outputs-dir", type=str,
-                       default=str(PROJECT_ROOT / "outputs"),
-                       help="Outputs directory to scan.")
-    p_art.add_argument("--write", nargs="?", const="",
-                       default=None,
-                       help=("Write JSON index. With no value, writes "
-                             "<outputs-dir>/artifact_index.json."))
-    p_art.add_argument("--no-orphans", action="store_true",
-                       help="Only include directories that contain manifests.")
-    p_art.add_argument("--limit", type=int, default=15,
-                       help="Rows to print (default 15).")
-    add_common_args(p_art)
-    p_art.set_defaults(_info_fn=_info_artifacts)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -110,24 +93,6 @@ def _info_datasets(args) -> int:
     print("    template / hits / area / raw-area mqana / "
           "raw-area offline / timewalk / plot")
     print("    (raw-area drs N/A — use `raw-area offline` for the LANL pulse list)")
-    return 0
-
-
-def _info_presets(args) -> int:
-    if not CONFIGS:
-        print("(no named configuration presets registered)")
-        return 0
-    for name, cfg in CONFIGS.items():
-        print(f"━━━ {name}")
-        print(f"    base_dataset : {cfg.base_dataset}")
-        if cfg.references:
-            print(f"    references   : {', '.join(cfg.references)}")
-        print(f"    description  : {cfg.description}")
-        print(f"    overrides    :")
-        for k, v in cfg.overrides.items():
-            print(f"        {k:<20} = {v!r}")
-        print()
-    print(f"{len(CONFIGS)} named preset(s).")
     return 0
 
 
@@ -212,57 +177,3 @@ def _info_template(args) -> int:
     return 0
 
 
-def _info_artifacts(args) -> int:
-    from pmtdeconv.io.artifacts import (
-        DEFAULT_INDEX_NAME, build_artifact_index, write_artifact_index,
-    )
-
-    outputs_dir = Path(args.outputs_dir)
-    index = build_artifact_index(
-        outputs_dir,
-        include_orphans=not args.no_orphans,
-    )
-    summary = index["summary"]
-
-    print(f"{outputs_dir}")
-    print(f"  manifests         : {summary['n_manifests']}")
-    print(f"  invalid manifests : {summary['n_invalid_manifests']}")
-    print(f"  orphan dirs       : {summary['n_orphan_dirs']}")
-    print(f"  artifacts indexed : {summary['n_artifacts']}")
-    if summary["output_role_counts"]:
-        role_bits = [
-            f"{role}={count}"
-            for role, count in sorted(summary["output_role_counts"].items())
-        ]
-        print(f"  output roles      : {', '.join(role_bits)}")
-    print()
-
-    rows = index["artifacts"][:max(int(args.limit), 0)]
-    if rows:
-        print(f"{'kind':<14} {'subcommand':<18} {'dataset':<10} "
-              f"{'config':<16} {'runs':<16} out_dir")
-        print("-" * 120)
-        for ent in rows:
-            runs = ent.get("runs")
-            if isinstance(runs, list):
-                runs_s = ",".join(str(r) for r in runs[:4])
-                if len(runs) > 4:
-                    runs_s += ",..."
-            elif runs is None:
-                runs_s = ""
-            else:
-                runs_s = str(runs)
-            print(f"{str(ent.get('kind') or ''):<14} "
-                  f"{str(ent.get('subcommand') or ''):<18} "
-                  f"{str(ent.get('dataset') or ''):<10} "
-                  f"{str(ent.get('config') or ''):<16} "
-                  f"{runs_s:<16} "
-                  f"{Path(str(ent.get('out_dir') or '')).name}")
-
-    if args.write is not None:
-        target = (outputs_dir / DEFAULT_INDEX_NAME
-                  if args.write == "" else Path(args.write))
-        write_artifact_index(index, target)
-        print()
-        print(f"Wrote: {target}")
-    return 0

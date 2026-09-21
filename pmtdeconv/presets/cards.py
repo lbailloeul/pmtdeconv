@@ -57,6 +57,50 @@ def is_card_reference(value) -> bool:
     return Path(s).expanduser().exists()
 
 
+# Every top-level key a card may set. ``base`` and ``settings`` are handled
+# outside _field_overrides; ``meta`` is free-form provenance. Anything else is
+# almost certainly a typo — silently ignoring it (the behavior until
+# 2026-09-18) meant a card could declare `polarty: -1`, lint clean, and run
+# with the wrong polarity and no indication why.
+CARD_KEYS = frozenset({
+    "name", "base", "settings", "meta", "notes",
+    "data_dir", "file_glob", "exclude_glob", "format", "tree", "branches",
+    "dt_ns", "polarity", "cosine_cutoff_mhz",
+    "template", "template_na22fmt", "templates",
+    "spe_band", "spe_charge", "pe_band", "fom",
+    "offline_data_dir", "offline_file_glob",
+    "pmt_type", "hv_volts",
+})
+
+
+def unknown_card_keys(raw: dict) -> list:
+    """Top-level keys a card sets that pmtdeconv does not understand."""
+    return sorted(k for k in (raw or {}) if k not in CARD_KEYS)
+
+
+def suggest_card_key(key: str) -> Optional[str]:
+    """Closest real key name, for a 'did you mean' hint."""
+    import difflib
+    match = difflib.get_close_matches(key, CARD_KEYS, n=1, cutoff=0.7)
+    return match[0] if match else None
+
+
+# Cards are meant to be SHARED, so a path in one must not pin it to the author's
+# filesystem. ``${PMTDECONV_DATA_ROOT}`` expands to the same data root the
+# in-code seeds resolve (env var -> nearest marker-bearing data/ dir -> legacy
+# fallback), so a card written on one machine resolves correctly on another
+# with no edit. Other ${VARS} expand from the environment as usual.
+DATA_ROOT_TOKEN = "${PMTDECONV_DATA_ROOT}"
+
+
+def expand_card_path(raw: str) -> str:
+    """Expand ``${PMTDECONV_DATA_ROOT}`` and any other environment variables."""
+    if DATA_ROOT_TOKEN in raw:
+        from pmtdeconv.presets.datasets import _resolve_data_root
+        raw = raw.replace(DATA_ROOT_TOKEN, str(_resolve_data_root()))
+    return os.path.expandvars(raw)
+
+
 def _field_overrides(raw: dict, card_dir: Path) -> dict:
     """Map the card keys PRESENT in ``raw`` to ``DatasetPreset`` field kwargs.
 
@@ -68,8 +112,15 @@ def _field_overrides(raw: dict, card_dir: Path) -> dict:
     def _resolve(p) -> Optional[Path]:
         if p in (None, ""):
             return None
-        pp = Path(str(p)).expanduser()
-        return pp if pp.is_absolute() else (card_dir / pp)
+        pp = Path(expand_card_path(str(p))).expanduser()
+        pp = pp if pp.is_absolute() else (card_dir / pp)
+        # Normalize: a card may legitimately spell a path with ".." (the
+        # bundled templates sit one directory over from the shipped cards).
+        # Resolving here keeps manifests recording real absolute paths rather
+        # than "…/datasets/../templates/…" relative to whatever the CWD was.
+        # abspath (not resolve): normalizes and absolutizes without
+        # following symlinks, so a symlinked data root stays as written.
+        return Path(os.path.abspath(pp))
 
     ov: dict = {}
     if "name" in raw:
@@ -116,6 +167,16 @@ def _field_overrides(raw: dict, card_dir: Path) -> dict:
         # per-channel SPE CSVs: {branch: path}, each resolved vs the card dir
         ov["template_csv_by_channel"] = {
             str(br): _resolve(p) for br, p in raw["templates"].items()}
+    if "spe_charge" in raw and raw["spe_charge"] is not None:
+        # per-branch 1-PE charge anchor in pVs: {branch: value}
+        ov["spe_charge_pvs"] = {
+            str(br): float(v) for br, v in raw["spe_charge"].items()}
+    if "meta" in raw and raw["meta"] is not None:
+        # Free-form: carried verbatim onto Settings and into every manifest.
+        ov["meta"] = dict(raw["meta"])
+    if "pe_band" in raw and raw["pe_band"] is not None:
+        b = raw["pe_band"]
+        ov["pe_band"] = (float(b[0]), float(b[1]))
     return ov
 
 
@@ -183,6 +244,16 @@ def load_card(path) -> DatasetPreset:
     """
     raw, card_dir = _read_card_yaml(path)
     path = _resolve_card_path(path)
+
+    # Loud at USE time, not just at lint time: a stray key is a setting the
+    # expert believes is in effect and is not. Warn (never fail) so a card
+    # written for a newer pmtdeconv still loads on an older one.
+    for key in unknown_card_keys(raw):
+        hint = suggest_card_key(key)
+        print(f"[card] {path.name}: ignoring unknown key {key!r}"
+              + (f" — did you mean {hint!r}?" if hint else
+                 " — put free-form provenance under `meta:`"))
+
     overrides = _field_overrides(raw, card_dir)
 
     if "base" in raw and raw["base"] is not None:

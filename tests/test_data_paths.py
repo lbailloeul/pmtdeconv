@@ -99,7 +99,7 @@ def test_message_names_searched_paths_and_remedies(tmp_path):
 
 def test_drs_message_mentions_root_flag(tmp_path):
     msg = not_found_message(tmp_path, 5, kind="drs")
-    assert "--root" in msg and "Run5.root" in msg
+    assert "--file" in msg and "Run5.root" in msg
 
 
 # ── resolve_runs: all-missing raises, partial warns ───────────────

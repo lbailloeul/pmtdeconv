@@ -106,32 +106,24 @@ def test_tune_stft_smoke(tmp_path):
     assert recipe["swept_axis"] == "stft_config"
 
 
-def test_tune_denoiser_smoke(tmp_path):
-    """``pmtdeconv tune denoiser`` (STFT-vs-wavelet verdict) on level3 ×
-    2 cutoffs emits verdict.json + an FWHM-vs-cutoff figure."""
-    out_dir = tmp_path / "tune_denoiser"
-    _run_pmtdeconv(
-        "tune", "denoiser",
-        "--dataset", "na22",
-        "--regimes", "level3",
-        "--cutoffs", "100", "450",
-        "--sample-events", "30",
-        "--n-events", "30",
-        "--out-dir", str(out_dir),
-    )
-    verdict = json.loads((out_dir / "verdict.json").read_text())
-    assert verdict["configs"] == ["control", "wavelet-cons", "wavelet-aggr",
-                                  "stft", "stft-robust"]
-    assert "level3" in verdict["sweep"]
-    # 5 configs × 2 cutoffs = 10 rows
-    assert len(verdict["sweep"]["level3"]) == 10
-    assert "level3" in verdict["summary"]
-    assert (out_dir / "fwhm_vs_cutoff_level3.png").exists()
+def test_tune_denoiser_is_removed(tmp_path):
+    """``tune denoiser`` was removed 2026-09-14 (superseded by
+    ``benchmark denoisers``). It must fail with the migration instruction,
+    not a bare argparse "invalid choice" — difflib cannot bridge the rename.
+    """
+    import subprocess
+    res = subprocess.run(
+        [PYBIN, "-m", "pmtdeconv", "tune", "denoiser", "--dataset", "na22"],
+        cwd=REPO_ROOT, capture_output=True, text=True)
+    assert res.returncode != 0
+    combined = res.stdout + res.stderr
+    assert "benchmark denoisers" in combined, (
+        f"removal message must name the replacement; got:\n{combined}")
 
 
 def test_tune_dry_run(tmp_path):
     """All leaves respect --dry-run (no ROOT I/O, manifest only)."""
-    for leaf in ("cosine", "wavelet", "stft", "denoiser"):
+    for leaf in ("cosine", "wavelet", "stft"):
         out_dir = tmp_path / f"dry_{leaf}"
         _run_pmtdeconv("tune", leaf,
                        "--dataset", "na22",
@@ -178,3 +170,70 @@ def test_write_presets_idempotent(tmp_path):
     matches_2 = re.findall(name_pattern, src_after_2)
     # Same count → idempotent
     assert len(matches_2) == len(matches_1)
+
+
+# ─── _collapse_tuned retention policy (2026-07-02) ───────────────────
+# Dated preset names are immutable provenance anchors: manifests record
+# them, so a re-run that reproduces the current winner must be a NO-OP.
+# (The pre-2026-07-02 "newest wins" retention re-stamped the entry with
+# the re-run's date — the old name vanished and every manifest written
+# against it stopped resolving.)
+
+def _entry(name, cutoff, base="na22"):
+    return {"name": name, "base_dataset": base,
+            "overrides": {"cosine_cutoff_mhz": cutoff},
+            "description": f"Auto-tuned ({name})."}
+
+
+def test_collapse_rerun_same_winner_is_noop():
+    """Reproducing the current winner on a later date keeps the ORIGINAL
+    dated name (first appearance) and leaves the alias pointing at it."""
+    from pmtdeconv.commands._tune_shared import _collapse_tuned
+    merged = {
+        "na22-cosine-tuned-2026-06-14-level3": _entry(
+            "na22-cosine-tuned-2026-06-14-level3", 100.0),
+        "na22-cosine-tuned-2026-07-01-level3": _entry(
+            "na22-cosine-tuned-2026-07-01-level3", 100.0),
+    }
+    out = _collapse_tuned(merged)
+    assert "na22-cosine-tuned-2026-06-14-level3" in out
+    assert "na22-cosine-tuned-2026-07-01-level3" not in out
+    alias = out["na22-cosine-tuned-latest-level3"]
+    assert "na22-cosine-tuned-2026-06-14-level3" in alias["description"]
+
+
+def test_collapse_new_winner_appends_and_moves_alias():
+    """A genuinely different result gets its own dated entry; the alias
+    moves to it; the older dated entry SURVIVES (audit trail)."""
+    from pmtdeconv.commands._tune_shared import _collapse_tuned
+    merged = {
+        "na22-cosine-tuned-2026-06-14-level3": _entry(
+            "na22-cosine-tuned-2026-06-14-level3", 100.0),
+        "na22-cosine-tuned-2026-07-01-level3": _entry(
+            "na22-cosine-tuned-2026-07-01-level3", 450.0),
+    }
+    out = _collapse_tuned(merged)
+    assert "na22-cosine-tuned-2026-06-14-level3" in out
+    assert "na22-cosine-tuned-2026-07-01-level3" in out
+    alias = out["na22-cosine-tuned-latest-level3"]
+    assert alias["overrides"] == {"cosine_cutoff_mhz": 450.0}
+    assert "na22-cosine-tuned-2026-07-01-level3" in alias["description"]
+
+
+def test_collapse_alias_never_references_collapsed_name():
+    """When the newest dated name collapses into an older twin, the alias
+    must reference the RETAINED name, never the deleted one."""
+    from pmtdeconv.commands._tune_shared import _collapse_tuned
+    merged = {
+        "na22-cosine-tuned-2026-05-31-level3": _entry(
+            "na22-cosine-tuned-2026-05-31-level3", 450.0),
+        "na22-cosine-tuned-2026-06-14-level3": _entry(
+            "na22-cosine-tuned-2026-06-14-level3", 100.0),
+        "na22-cosine-tuned-2026-07-01-level3": _entry(
+            "na22-cosine-tuned-2026-07-01-level3", 100.0),
+    }
+    out = _collapse_tuned(merged)
+    dated_kept = {n for n in out if "-latest-" not in n}
+    alias = out["na22-cosine-tuned-latest-level3"]
+    referenced = [n for n in dated_kept if n in alias["description"]]
+    assert referenced, "alias must reference a retained dated preset"

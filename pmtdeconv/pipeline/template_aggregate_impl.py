@@ -16,10 +16,9 @@ import numpy as np
 import pandas as pd
 
 import sys
-from pmtdeconv.pipeline.template_build_impl import fit_stacked, N_SAMP, PK_CENTER, DATASETS
+from pmtdeconv.pipeline.template_build_impl import fit_stacked, N_SAMP, PK_CENTER
 
 OUT = Path("outputs/spe_templates_perfile")
-DT_BY_DS = {c["name"]: c["dt"] if c["dt"] != "auto" else 1.25 for c in DATASETS}
 
 
 def tag_for(file):
@@ -65,7 +64,9 @@ def main():
     fig, axes = plt.subplots(len(ds_list), 1, figsize=(11, 2.3 * len(ds_list)), squeeze=False)
     for r, ds in enumerate(ds_list):
         sub = agg_df[agg_df.dataset == ds]
-        dt = DT_BY_DS.get(ds, 1.25); t = np.arange(N_SAMP) * dt
+        # dt from the aggregated rows themselves (carried from the perfile
+        # CSV) — works for registry names AND old legacy-name CSVs alike.
+        dt = float(sub.dt_ns.iloc[0]); t = np.arange(N_SAMP) * dt
         ax = axes[r][0]
         cmap = plt.cm.viridis(np.linspace(0, 0.9, max(len(sub), 1)))
         for (_, row), c in zip(sub.iterrows(), cmap):

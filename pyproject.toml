@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pmtdeconv"
-version = "0.2.0"
+version = "0.3.0"
 description = "Unified CLI for the PMT-waveform deconvolution toolkit (Na22 / Cd109 / MilliQan / LANL)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -43,14 +43,17 @@ dev = [
 [project.scripts]
 pmtdeconv = "pmtdeconv.cli:main"
 
-[project.urls]
-Documentation = "https://github.com/lbailloeul/pmtdeconv"   # placeholder
-Source = "https://github.com/lbailloeul/pmtdeconv"
-
 # ─── setuptools ────────────────────────────────────────────────────────
 [tool.setuptools.packages.find]
 include = ["pmtdeconv*"]
 exclude = ["tests*", "legacy*", "outputs*", "docs*"]
+
+# Bundled calibration artifacts must land in the wheel: the na22/cd109 dataset
+# presets point at pmtdeconv/data/templates/*.csv, so a `pip install` without
+# them would resolve to a missing template.
+[tool.setuptools.package-data]
+pmtdeconv = ["data/templates/*.csv", "data/templates/*.md",
+             "data/datasets/*.yaml"]
 
 # ─── pytest ────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]

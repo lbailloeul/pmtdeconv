@@ -31,10 +31,15 @@ from pmtdeconv.presets import resolve_settings
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    g = parser.add_argument_group("raw_area drs")
-    g.add_argument("--root", type=str, default=None,
-                   help="DRSprocessing ROOT file. Default: "
-                        "<data-root>/Run<RUN>.root.")
+    g = parser.add_argument_group("raw-area drs")
+    g.add_argument("--file", dest="file", type=str, default=None,
+                   help="Exact DRSprocessing ROOT FILE to read (wins over "
+                        "the search). Default: found under --data-root, "
+                        "e.g. <data-root>/Run<RUN>.root.")
+    # Renamed from --root on 2026-09-18: "--root" named the file FORMAT and
+    # sat next to --data-root (a DIRECTORY), so the two were easy to swap.
+    from pmtdeconv.cli import add_renamed_alias
+    add_renamed_alias(g, "--root", "--file", dest="file")
     g.add_argument("--board", type=str, default="2984",
                    help="Board prefix in DRSprocessing branch names "
                         "(default 2984).")
@@ -66,7 +71,7 @@ def run(args: argparse.Namespace) -> int:
     # area_<board>_<ch> branches. Point users at the dedicated
     # `raw_area offline` subcommand which reads the LANL pulse-list
     # *_offline.root files.
-    if settings.format == "object" and not args.root:
+    if settings.format == "object" and not args.file:
         raise SystemExit(
             f"`pmtdeconv raw-area drs --dataset {settings.dataset}` is not "
             "applicable: object-format datasets (LANL_835/movedBar) have "
@@ -84,7 +89,7 @@ def run(args: argparse.Namespace) -> int:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if maybe_dry_run_exit(subcommand="raw_area drs", settings=settings,
+    if maybe_dry_run_exit(subcommand="raw-area drs", settings=settings,
                           provenance=provenance, out_dir=out_dir,
                           duration_seconds=time.time() - t0):
         return 0
@@ -107,7 +112,7 @@ def run(args: argparse.Namespace) -> int:
     data_root = (Path(settings.data_root) if settings.data_root
                  else PROJECT_ROOT.parent.parent.parent / "data")
     for run_num, root_path in resolve_runs(data_root, runs, kind="drs",
-                                           explicit=args.root):
+                                           explicit=args.file):
         inputs_meta.append({"role": "root_data", "path": str(root_path)})
 
         with uproot.open(root_path) as ufile:
@@ -140,7 +145,7 @@ def run(args: argparse.Namespace) -> int:
     manifest_path = (Path(settings.manifest_path)
                      if settings.manifest_path else (out_dir / "manifest.json"))
     write_manifest(
-        subcommand="raw_area drs",
+        subcommand="raw-area drs",
         settings=settings,
         provenance=provenance,
         inputs=inputs_meta,

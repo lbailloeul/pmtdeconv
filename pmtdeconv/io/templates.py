@@ -14,9 +14,10 @@ Three schemas are accepted (all encountered in the repo):
    ``det`` and ``chan`` columns instead of a combined ``branch``.
 
 Returns a dict ``{branch: {"A", "tau_rise", "tau_fall", "sigma", "t0"}}``.
-``A`` and ``t0`` are taken from a fallback template (the deconvolution
-only cares about kernel SHAPE — amplitude and time offset cancel in the
-FFT division).
+``A`` and ``t0`` are taken from a fallback template. ``A`` is mathematically
+irrelevant (the kernel is unit-area normalized downstream). ``t0`` is NOT —
+a nonzero t0 time-shifts the deconvolved output by −t0 (FFT(r) picks up
+e^{-iω·t0}); correctness relies on this loader pinning ``t0 = DEFAULT_T0 = 0``.
 
 Cross-reference: this is the unified version of three near-duplicate
 loaders previously living in ``deconv_area_Na22.load_templates``,
@@ -31,11 +32,13 @@ from typing import Dict, Optional
 import pandas as pd
 
 # Default fallback amplitudes — match ``deconv_area_Na22.FALLBACK_TEMPLATE``
-# which uses ``MILLIQAN_TEMPLATE["A"] = 400.0``. A and t0 are mathematically
-# irrelevant after kernel normalization (cancel in the FFT division), but
-# floating-point intermediate magnitudes differ between A=1 and A=400 by
-# 1 ulp on some entries — keeping A=400.0 lets the legacy and pmtdeconv
-# pipelines produce *byte-identical* CSVs.
+# which uses ``MILLIQAN_TEMPLATE["A"] = 400.0``. A is mathematically irrelevant
+# after unit-area kernel normalization, but floating-point intermediate
+# magnitudes differ between A=1 and A=400 by 1 ulp on some entries — keeping
+# A=400.0 lets the legacy and pmtdeconv pipelines produce *byte-identical*
+# CSVs. t0 does NOT cancel (a nonzero t0 time-shifts u_rec by −t0):
+# DEFAULT_T0 = 0.0 is load-bearing — never propagate a template file's own
+# nonzero t0 through here.
 DEFAULT_A = 400.0
 DEFAULT_T0 = 0.0
 
@@ -87,6 +90,30 @@ def load_template(
         return templates
 
     df = pd.read_csv(csv_path)
+
+    # --- Schema 4 (2026-07-28): SAMPLED kernel ------------------------
+    # Long-format columns ``branch, t_ns, r`` — an arbitrary measured/
+    # simulated 1-PE waveform (e.g. the Tang-2024 MC template with
+    # undershoot + reflections, or a future measured single-peak kernel).
+    # ``build_spe_template`` resamples it onto the run grid and unit-area
+    # normalizes — the same normalization contract as the biexp path, so
+    # deconvolved charge stays pVs.
+    if {"t_ns", "r"}.issubset(df.columns):
+        if "branch" in df.columns:
+            groups = list(df.groupby("branch"))
+        else:
+            groups = [("d0_ch1", df)]
+        for branch, grp in groups:
+            grp = grp.sort_values("t_ns")
+            templates[str(branch)] = dict(
+                kind="sampled",
+                t_ns=grp["t_ns"].to_numpy(dtype=float),
+                y=grp["r"].to_numpy(dtype=float),
+            )
+        if verbose:
+            print(f"Loaded {len(templates)} SAMPLED kernel template(s) "
+                  f"from {csv_path}")
+        return templates
 
     # --- Schema 1: stacked per-channel (Cd109 stacked-fit) -----------
     # Two on-disk variants both land here (both carry ``tau_rise_ns``):

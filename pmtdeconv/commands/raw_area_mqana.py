@@ -41,7 +41,7 @@ from pmtdeconv.presets import resolve_settings
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    g = parser.add_argument_group("raw_area mqana")
+    g = parser.add_argument_group("raw-area mqana")
     g.add_argument("--mqana-window-ns", type=float, default=35.0,
                    help="Total integration window centered on per-event "
                         "sample-max (default 35 ns = ±17.5 ns). MQAna "
@@ -92,7 +92,7 @@ def run(args: argparse.Namespace) -> int:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if maybe_dry_run_exit(subcommand="raw_area mqana", settings=settings,
+    if maybe_dry_run_exit(subcommand="raw-area mqana", settings=settings,
                           provenance=provenance, out_dir=out_dir,
                           duration_seconds=time.time() - t0):
         return 0
@@ -211,12 +211,14 @@ def run(args: argparse.Namespace) -> int:
                                            entry_start=0, entry_stop=stop):
                     n_chunk = len(arrays[branches[0]])
                     br_arrays = {b: to_numpy2d(arrays[b]) for b in branches}
-                    sat = np.zeros(n_chunk, dtype=bool)
-                    for b in branches:
-                        sat |= _plateau_saturated(br_arrays[b], polarity)
 
                     for b in branches:
                         w = br_arrays[b]
+                        # Per-channel saturation (2026-07-28; matches the
+                        # object path above). The old per-event OR meant one
+                        # clipped channel NaN'd every channel of that event —
+                        # cross-channel contamination.
+                        sat = _plateau_saturated(w, polarity)
                         if args.full_window:
                             area, peak_height = fixed_window_area(
                                 w, dt_ns, n_pre=args.n_pre,
@@ -240,16 +242,18 @@ def run(args: argparse.Namespace) -> int:
         csv_path = out_dir / f"area_mqana_run{run_num}.csv"
         df.to_csv(csv_path, index=False)
         outputs_meta.append({"role": "area_mqana_csv", "path": str(csv_path)})
-        n_sat = int(df.area.isna().sum() // max(len(branches), 1))
+        # Per-channel saturation flags (2026-07-28): count NaN'd channel-rows,
+        # not "events" (a single event can be clipped on one channel only).
+        n_sat = int(df.area.isna().sum())
         stats["runs"].append(run_num)
         stats["n_entries_total"] += int(len(df) // max(len(branches), 1))
         stats["n_saturated_total"] += n_sat
-        print(f"  Saved {csv_path}  ({len(df)} rows, {n_sat} saturated events)")
+        print(f"  Saved {csv_path}  ({len(df)} rows, {n_sat} saturated channel-rows)")
 
     manifest_path = (Path(settings.manifest_path)
                      if settings.manifest_path else (out_dir / "manifest.json"))
     write_manifest(
-        subcommand="raw_area mqana",
+        subcommand="raw-area mqana",
         settings=settings,
         provenance=provenance,
         inputs=inputs_meta,

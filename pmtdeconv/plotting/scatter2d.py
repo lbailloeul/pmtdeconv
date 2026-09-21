@@ -29,7 +29,7 @@ def plot_1d(df, run_label: str, amax: float, bins: int,
     resolved ``settings.dataset``).
     """
     col = metric
-    label = "Deconvolved area [a.u.]" if metric == "area" else "Peak height [a.u.]"
+    label = "Deconvolved area [pVs]" if metric == "area" else "Peak height [a.u.]"
     use_root_style()
     fig, ax = plt.subplots(figsize=(9, 5))
     edges = np.linspace(0, amax, bins + 1)

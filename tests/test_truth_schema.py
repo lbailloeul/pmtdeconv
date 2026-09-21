@@ -80,3 +80,45 @@ def test_dt_ns_propagates(tmp_path, monkeypatch, msr_module):
     sentinel = tmp_path / "regime" / "level3" / ".dt_ns"
     assert sentinel.exists()
     assert float(sentinel.read_text().strip()) == 1.25
+
+
+def test_pulse_id_roundtrip_via_save_truth(tmp_path):
+    """v1.1: save_truth PRESERVES the optional pulse_id / n_pe columns
+    (pre-1.1 it silently dropped them, making multi-pulse truth unscorable)."""
+    from pmtdeconv.io.truth import (OPTIONAL_COLUMNS, REQUIRED_COLUMNS,
+                                    TRUTH_SCHEMA_VERSION, load_truth,
+                                    save_truth)
+    assert TRUTH_SCHEMA_VERSION == "1.1"
+    assert OPTIONAL_COLUMNS == ["pulse_id", "n_pe"]
+    df = pd.DataFrame([
+        {"event": 0, "branch": "d0_ch1", "true_amp_mv": 50.0,
+         "true_center_ns": 200.0, "true_charge_pVs": 900.0,
+         "true_sigma_ns": 6.0, "saturated": False, "pulse_id": 0, "n_pe": 3},
+        {"event": 0, "branch": "d0_ch1", "true_amp_mv": 30.0,
+         "true_center_ns": 212.0, "true_charge_pVs": 540.0,
+         "true_sigma_ns": 6.0, "saturated": False, "pulse_id": 1, "n_pe": 2},
+    ])
+    p = save_truth(df, tmp_path / "t.csv")
+    back = load_truth(p)
+    assert "pulse_id" in back.columns and "n_pe" in back.columns
+    assert list(back["pulse_id"]) == [0, 1]
+    # required-only frames still round-trip (optional columns truly optional)
+    p2 = save_truth(df[REQUIRED_COLUMNS], tmp_path / "t2.csv")
+    assert "pulse_id" not in load_truth(p2).columns
+
+
+def test_pileup_dense_regime_two_pulses(tmp_path, monkeypatch, msr_module):
+    """pileup_dense: exactly two pulses per event, separations 2-10 ns —
+    the resolving-power-scan input (0–20 PE re-scope)."""
+    monkeypatch.setattr(msr_module, "__file__",
+                        str(tmp_path / "make_synth_root.py"))
+    msr_module.main(regime="pileup_dense", n_events=10, write_truth=True)
+    truth_path = (tmp_path / "regime" / "pileup_dense"
+                  / "flattened_Run0.truth.csv")
+    df = pd.read_csv(truth_path)
+    ch1 = df[df.branch == "d0_ch1"]
+    per_event = ch1.groupby("event").size()
+    assert (per_event == 2).all(), per_event.to_dict()
+    seps = ch1.sort_values(["event", "pulse_id"]).groupby("event")[
+        "true_center_ns"].diff().dropna()
+    assert (seps >= 2.0 - 1e-9).all() and (seps <= 10.0 + 1e-9).all()

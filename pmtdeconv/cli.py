@@ -36,17 +36,9 @@ SUBCOMMANDS = {
         "build":     "template_build",
         "aggregate": "template_aggregate",
     },
-    "hits": {None: "pulse"},
-    "area": {None: "waveform"},
+    "hits": {None: "hits"},
+    "area": {None: "area"},
     "raw-area": {
-        "mqana":   "raw_area_mqana",
-        "drs":     "raw_area_drs",
-        "offline": "raw_area_offline",
-    },
-    # Compatibility names retained for existing scripts.
-    "pulse": {None: "pulse"},
-    "waveform": {None: "waveform"},
-    "raw_area": {
         "mqana":   "raw_area_mqana",
         "drs":     "raw_area_drs",
         "offline": "raw_area_offline",
@@ -59,10 +51,11 @@ SUBCOMMANDS = {
         "marginals":    "plot_marginals",
         "energy":       "plot_energy",
         "analyze":      "plot_analyze",
-        # "deconv-value" demoted to legacy/ (2026-06-13): the multi-hit + nPE
-        # "deconvolution value" figures aren't convincing on synthetic data —
-        # restore from legacy/plotting/ + re-add this line once validated on
-        # real Na22 data with genuine pile-up.
+        # Restored 2026-07-29 (0–20 PE re-scope): the demotion condition —
+        # "validated on real data with genuine pile-up" — is met by the
+        # `select multihit` + `gain calibrate` path, and the nPE axis is now
+        # real photoelectrons when spe_charge is calibrated.
+        "deconv-value": "plot_deconv_value",
     },
     # `info` is single-level — its module attaches its own sub-parsers
     # for datasets/presets/template/offline-file.
@@ -74,12 +67,30 @@ SUBCOMMANDS = {
         "cosine":   "tune_cosine",
         "wavelet":  "tune_wavelet",
         "stft":     "tune_stft",
-        "denoiser": "tune_denoiser",
         "fom":      "tune_fom",
     },
     # Step 5: derive a data-driven veto profile from a run's raw waveforms.
     "vetoes": {
         "calibrate": "vetoes_calibrate",
+    },
+    # 0–20 PE re-scope: fit the 1-PE charge-quantization peak → propose the
+    # per-branch `spe_charge` PE-scale anchor (expert applies; never silent).
+    "gain": {
+        "calibrate": "gain_calibrate",
+    },
+    # 0–20 PE re-scope: the Tang et al. 2411.07620 MC (the paper that
+    # established the 0–20 PE applicability domain) as a standard dataset.
+    "sim": {
+        "tang2024": "sim_tang2024",
+    },
+    # 0–20 PE re-scope: THE STFT-vs-wavelet verdict harness — every arm runs
+    # the real pipeline under identical conditions (supersedes tune denoiser).
+    "benchmark": {
+        "denoisers": "benchmark_denoisers",
+    },
+    # 0–20 PE re-scope: multi-hit bunch selection (vault 11e clump recipe).
+    "select": {
+        "multihit": "select_multihit",
     },
     # S4: scaffold + validate file-backed dataset cards (no Python edit).
     "dataset": {
@@ -93,10 +104,35 @@ SUBCOMMANDS = {
 
 EAGER_SINGLE_LEVEL = {"info", "config", "results"}
 
-DEPRECATED_COMMANDS = {
-    "pulse": "hits",
+# Commands REMOVED 2026-09-14 after their one deprecation cycle. They are no
+# longer registered, so argparse would report a bare "invalid choice"; these
+# entries turn that into the actual migration instruction instead. Manifests
+# written before the removal still store the old names — that translation lives
+# separately in ``commands/results.py`` and is unaffected.
+REMOVED_COMMANDS = {
+    "pulse":    "hits",
     "waveform": "area",
     "raw_area": "raw-area",
+}
+# Leaves REPLACED by a different command. Unlike the verb renames above these
+# are not same-flags renames, so each carries its own date and a note saying
+# what actually changed — a migration message must not claim otherwise.
+REMOVED_LEAVES = {
+    ("tune", "denoiser"): {
+        "use": "benchmark denoisers",
+        "when": "2026-09-14",
+        "note": "Same question (STFT vs wavelet), now scored against truth "
+                "with every arm run under identical conditions; see its "
+                "--help for the flags.",
+    },
+    ("sim", "tang2024-paper"): {
+        "use": "benchmark denoisers --suite tang2024 --arms tang2024 "
+               "tang2024-fft",
+        "when": "2026-09-21",
+        "note": "The paper's method is now two benchmark arms scored against "
+                "the same truth as ours; the published fig-12/14 values are "
+                "in verdict.json. Pass --tang-dir <dir> instead of --sim-dir.",
+    },
 }
 
 
@@ -111,13 +147,8 @@ LEAF_HELP = {
     ("raw-area", "mqana"):     "MQAna-style narrow-window raw area.",
     ("raw-area", "drs"):       "Pull precomputed area_<board>_<ch> from DRSprocessing.",
     ("raw-area", "offline"):   "LANL *_offline.root pulse-list area + hit CSVs.",
-    ("pulse",    None):        "Deprecated alias for `hits`.",
-    ("waveform", None):        "Deprecated alias for `area`.",
-    ("raw_area", "mqana"):     "Deprecated alias for `raw-area mqana`.",
-    ("raw_area", "drs"):       "Deprecated alias for `raw-area drs`.",
-    ("raw_area", "offline"):   "Deprecated alias for `raw-area offline`.",
-    ("timewalk", "run"):       "Scan-only timewalk: summary CSV + curve PNG.",
-    ("timewalk", "gif"):       "Full animated timewalk visualization.",
+    ("timewalk", "run"):       "Scan-only timewalk: summary CSV + curve PNG. [track 2: timing-valid through saturation; charge out of domain]",
+    ("timewalk", "gif"):       "Full animated timewalk visualization. [track 2: timing-valid through saturation]",
     ("plot",     "marginals"): "CH1-vs-CH2 area heatmap + 1D marginals.",
     ("plot",     "energy"):    "Four-method energy histograms (raw/FFT/STFT/wavelet).",
     ("plot",     "analyze"):   "Diagnostic plots from a deconv-pulse CSV (legacy/diagnostic).",
@@ -127,9 +158,13 @@ LEAF_HELP = {
     ("tune",     "cosine"):    "Sweep cosine cutoff per regime, score vs truth.",
     ("tune",     "wavelet"):   "Sweep wavelet config per regime, score vs truth.",
     ("tune",     "stft"):      "Sweep STFT denoiser per regime, score vs truth.",
-    ("tune",     "denoiser"):  "STFT-vs-wavelet verdict: per-pulse FWHM vs cutoff, 5 configs.",
+    ("benchmark", "denoisers"): "Head-to-head vs truth: our denoisers + Tang's own method.",
+    ("select",   "multihit"):  "Select 0–20 PE multi-hit bunches → reusable event_list.csv.",
+    ("plot",     "deconv-value"): "Multi-hit multiplicity + nPE spectrum (real PE when calibrated).",
     ("tune",     "fom"):       "Sweep cutoff on REAL data vs the card FoM (+anti-cheat).",
     ("vetoes",   "calibrate"): "Derive a data-driven veto profile from raw waveforms.",
+    ("gain",     "calibrate"): "Fit the 1-PE charge peak → propose spe_charge (PE anchor).",
+    ("sim",      "tang2024"):  "Generate the Tang 2411.07620 MC (0–20 PE mix + two-hit scan).",
     ("dataset",  "init"):      "Scaffold a YAML dataset card (no Python edit).",
     ("dataset",  "lint"):      "Validate a dataset card's fields + settings block.",
     ("validate", None):        "Comparative FoM report: deconv vs raw vs DRS (no gate).",
@@ -167,6 +202,33 @@ def _parser_description() -> str:
     )
 
 
+class _RenamedFlagAction(argparse.Action):
+    """A pre-1.0 spelling kept working after a rename: stores under the NEW
+    dest and prints one line pointing at the new name. Hidden from --help, so
+    the old spelling keeps existing scripts running without being advertised."""
+
+    def __init__(self, option_strings, dest, new_flag=None, **kwargs):
+        self.new_flag = new_flag
+        super().__init__(option_strings, dest, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        print(f"note: {option_string} is now {self.new_flag} "
+              f"(the old spelling works until 1.0).", file=sys.stderr)
+        setattr(namespace, self.dest, values)
+
+
+def add_renamed_alias(parser, old: str, new: str, *, dest: str,
+                      nargs=None) -> None:
+    """Register ``old`` as a hidden alias of ``new`` (same ``dest``).
+
+    ``default=SUPPRESS`` so the alias never overwrites the real flag's default;
+    it only sets ``dest`` when actually passed."""
+    kwargs = {"nargs": nargs} if nargs is not None else {}
+    parser.add_argument(old, dest=dest, action=_RenamedFlagAction,
+                        new_flag=new, help=argparse.SUPPRESS,
+                        default=argparse.SUPPRESS, **kwargs)
+
+
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     """Flags shared by every subcommand. See the plan §2.1 for the list."""
     g = parser.add_argument_group("common")
@@ -197,15 +259,35 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--dt-ns", type=str, default=argparse.SUPPRESS,
                    help="Override sample spacing in ns. Pass 'auto' to "
                         "read from object-format files.")
+    # 2026-09-14: the CLI_TO_SETTINGS entry and every downstream consumer
+    # (Detector -> event_source._apply_polarity, area, raw-area mqana) already
+    # existed; only this argparse hop was missing, so negative-going data could
+    # be handled ONLY via a dataset preset or card. Same file-describing class
+    # as --dt-ns/--tree/--branches, so it belongs here in the common group.
+    g.add_argument("--polarity", type=int, choices=(1, -1),
+                   default=argparse.SUPPRESS,
+                   help="Waveform polarity: +1 positive-going (default), -1 "
+                        "negative-going (flipped once, in the event source). "
+                        "Overrides the dataset/card value.")
     g.add_argument("--out-dir", type=str, default=argparse.SUPPRESS,
                    help="Output directory (subcommand-specific default).")
     g.add_argument("--out-suffix", type=str, default=argparse.SUPPRESS,
                    help="Appended to default --out-dir.")
     g.add_argument("--manifest", type=str, default=argparse.SUPPRESS,
                    help="Manifest JSON path (default: <out-dir>/manifest.json).")
-    g.add_argument("--hash-inputs", action="store_true",
+    # Default ON since 2026-09-21. The old reason for opt-in ("slow on large
+    # ROOT files") was measured false: SHA256 of a 477 MB run is ~0.2 s,
+    # against reconstruction runs of minutes. With a shared, mutable card
+    # catalog, hashing is what lets two manifests prove they used the same
+    # card, template and data.
+    g.add_argument("--hash-inputs", dest="hash_inputs", action="store_true",
                    default=argparse.SUPPRESS,
-                   help="SHA256 every input file (slow on large ROOT files).")
+                   help="SHA256 every input (card, template, data) into the "
+                        "manifest. Default: on.")
+    g.add_argument("--no-hash-inputs", dest="hash_inputs",
+                   action="store_false", default=argparse.SUPPRESS,
+                   help="Skip input hashing (the manifest then records paths "
+                        "and sizes only).")
     g.add_argument("--dry-run", action="store_true",
                    default=argparse.SUPPRESS,
                    help="Resolve flags and write manifest only; skip ROOT I/O.")
@@ -338,6 +420,11 @@ _THIRD_PARTY_DEPS = {"numpy", "scipy", "pandas", "matplotlib", "uproot",
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    # Tee the console into memory so write_manifest can drop it next to the
+    # manifest as run.log. Started here (before parsing and configure_logging)
+    # so warnings emitted during resolution are captured too.
+    from pmtdeconv.io.run_log import start_capture, stop_capture
+    start_capture()
     try:
         return _dispatch(argv)
     except ModuleNotFoundError as exc:
@@ -353,9 +440,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 f"PyWavelets, …)\n"
             ) from exc
         raise
+    finally:
+        # Always restore: an in-process caller (pytest invoking cli.main())
+        # must not be left with a dangling tee on sys.stdout.
+        stop_capture()
 
 
 def _dispatch(argv: Optional[Sequence[str]] = None) -> int:
+    _exit_if_removed(argv)
     root = _build_root_parser()
     args, remaining = root.parse_known_args(argv)
 
@@ -365,7 +457,6 @@ def _dispatch(argv: Optional[Sequence[str]] = None) -> int:
         if remaining:
             raise SystemExit(f"unrecognized arguments: {' '.join(remaining)}")
         configure_logging(getattr(args, "log_level", "info"))
-        _warn_if_deprecated(args._command_path)
         return _invoke(args._run, args)
 
     # Deferred-leaf path: import the chosen module on demand, then re-parse.
@@ -376,22 +467,46 @@ def _dispatch(argv: Optional[Sequence[str]] = None) -> int:
         # Carry the path forward so commands can introspect if they want
         leaf_args._command_path = args._command_path
         configure_logging(getattr(leaf_args, "log_level", "info"))
-        _warn_if_deprecated(args._command_path)
         return _invoke(mod.run, leaf_args)
 
     raise SystemExit("internal: no _run or _lazy_module was set on parsed args")
 
 
-def _warn_if_deprecated(command_path: str) -> None:
-    command = command_path.split()[0]
-    replacement = DEPRECATED_COMMANDS.get(command)
-    if replacement:
-        suffix = command_path[len(command):]
-        print(
-            f"warning: `pmtdeconv {command}` is deprecated; "
-            f"use `pmtdeconv {replacement}{suffix}`.",
-            file=sys.stderr,
-        )
+def _exit_if_removed(argv: Optional[Sequence[str]]) -> None:
+    """Turn a removed command name into its migration instruction.
+
+    Runs BEFORE argparse so the user gets "`pulse` was renamed to `hits`"
+    instead of "invalid choice: 'pulse'" — difflib cannot suggest `hits` for
+    `pulse`, the names are not similar. Cheap: two dict lookups on argv.
+    """
+    raw = list(argv if argv is not None else sys.argv[1:])
+    # Only the verb/leaf tokens BEFORE the first flag — otherwise a flag's
+    # value ("--dataset na22") would be mistaken for a leaf name.
+    tokens = []
+    for a in raw:
+        if a.startswith("-"):
+            break
+        tokens.append(a)
+    if not tokens:
+        return
+    verb = tokens[0]
+    leaf = tokens[1] if len(tokens) > 1 else None
+
+    leaf_info = REMOVED_LEAVES.get((verb, leaf))
+    if leaf_info is not None:
+        raise SystemExit(
+            f"\n`pmtdeconv {verb} {leaf}` was removed on {leaf_info['when']}.\n"
+            f"  Use instead:  pmtdeconv {leaf_info['use']}\n"
+            f"  {leaf_info['note']}\n")
+    renamed = REMOVED_COMMANDS.get(verb)
+    if renamed is None:
+        return
+    target = f"{renamed} {leaf}" if leaf else renamed
+    raise SystemExit(
+        f"\n`pmtdeconv {verb}` was removed on 2026-09-14 after its "
+        f"deprecation cycle.\n"
+        f"  Use instead:  pmtdeconv {target}\n"
+        f"  Same flags and same output — only the name changed.\n")
 
 
 def _invoke(run_fn, args: argparse.Namespace) -> int:

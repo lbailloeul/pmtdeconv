@@ -20,8 +20,11 @@ keeps its own criterion + data source:
   biexponential to clean single-PE candidates; ``tau_rise`` locked 0.5 ns;
   stacked per-file -> per-channel median). Data: SPE/Cd109 calibration pulses.
 - **Cutoff/denoiser** — epsilon-constraint (vault note 13): minimize
-  reconstructed FWHM subject to charge drift <= 2% AND efficiency >= 0.9x
-  reference. Data: ground-truth regime fixtures.
+  reconstructed FWHM subject to charge drift <= 2% AND an efficiency floor.
+  NOTE the implementation gates efficiency at ``min_eff_frac × max(sweep
+  efficiency)`` (default 1.0), not at 0.9× the REFERENCE config as vault 13
+  proposed — the reference efficiency is computed for provenance only
+  (see ``tune_cosine``). Data: ground-truth regime fixtures.
 - **Vetoes — HYBRID** — data-driven quantiles of the run's own raw
   distributions by default; ground-truth scoring when a truth CSV exists.
   Data: raw waveforms (always) + truth CSV (when available).
@@ -49,7 +52,7 @@ class ProvenanceRecord:
     - ``"unresolved"``   — not resolved (e.g. a ``--dry-run`` with no template)
     """
     source: str
-    family: str = ""                       # "template" | "veto" | "denoiser"
+    family: str = ""                       # "template" | "veto" | "denoiser" | "gain"
     command: Optional[str] = None
     dataset: Optional[str] = None
     runs: Optional[List[int]] = None

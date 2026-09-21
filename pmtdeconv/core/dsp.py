@@ -14,7 +14,15 @@ from scipy.signal import find_peaks, stft, istft
 # ═══════════════════════════════════════════════════════════════════
 
 def deconvolve_hits(m_t, r_calib, filt, eps=1e-12):
-    """FFT deconvolution: u_rec = IFFT(FFT(m) * filter / FFT(r))."""
+    """FFT deconvolution: u_rec = IFFT(FFT(m) * filter / FFT(r)).
+
+    ``eps`` is a divide-by-zero guard on the (complex) kernel spectrum, NOT a
+    regularizer: added to complex R it does not bound ``|filter/R|`` (R can
+    pass arbitrarily close to zero at any phase). The low-pass ``filt`` is the
+    de-facto regularization. A proper Tikhonov/Wiener form
+    (``conj(R)·M·filt / (|R|² + ε)``) is a documented follow-up — changing it
+    would change every output byte.
+    """
     M = fft.fft(m_t)
     R = fft.fft(r_calib)
     U_rec = M * filt / (R + eps)
@@ -25,21 +33,74 @@ def deconvolve_hits(m_t, r_calib, filt, eps=1e-12):
 # STFT denoising
 # ═══════════════════════════════════════════════════════════════════
 
-def stft_denoise(u_rec, dt_ns, nperseg_ns=20.0, freq_cutoff_hz=2e8, amp_threshold=3.0):
+def stft_denoise(u_rec, dt_ns, nperseg_ns=20.0, freq_cutoff_hz=175e6,
+                 amp_threshold=10.0, threshold_mode="median",
+                 fixed_threshold=None):
     """
     STFT denoising: zero out high frequencies and small amplitudes.
     Returns the denoised signal (same length as u_rec).
+
+    Defaults match the production ``Settings`` values (20 ns / 175 MHz / 10.0);
+    unified 2026-07-28 — they previously diverged (200 MHz / 3.0), so wrapper
+    callers silently got non-pipeline behavior.
+
+    Known limitations (documented, deliberately unchanged — this is one of the
+    instruments under benchmark):
+    - the hop is pinned to ~1 ns (1 sample at sub-ns dt): a heavily
+      over-complete frame, O(N·nperseg) cost;
+    - ``noise_level`` is a single global median over the whole time-frequency
+      plane, so the effective threshold depends on record length and signal
+      occupancy;
+    - hard-zeroing sub-threshold bins deletes genuine small (few-PE) pulses
+      outright and yields compact "island" pulses whose FWHM is not comparable
+      to un-thresholded output.
     """
     fs = 1.0 / (dt_ns * 1e-9)
     nperseg = int(nperseg_ns / dt_ns)
     noverlap = nperseg - max(int(1.0 / dt_ns), 1)
     f, t_seg, Zxx = stft(u_rec, fs=fs, window=('gaussian', nperseg / 6),
                          nperseg=nperseg, noverlap=noverlap)
-    Zxx_filtered = Zxx.copy()
-    Zxx_filtered[f > freq_cutoff_hz, :] = 0.0
-    abs_Zxx = np.abs(Zxx_filtered)
-    noise_level = np.median(abs_Zxx[abs_Zxx > 0])
-    Zxx_filtered[abs_Zxx < amp_threshold * noise_level] = 0.0
+    if threshold_mode not in ("median", "fixed"):
+        # Validate rather than fall through: the median branch is the `else`,
+        # so an unrecognized mode (e.g. the pre-2026-09-18 spelling
+        # "absolute" left in a card or preset) would otherwise silently run
+        # the WRONG algorithm.
+        hint = (" (renamed to 'fixed' on 2026-09-18)"
+                if threshold_mode == "absolute" else "")
+        raise ValueError(f"stft threshold_mode {threshold_mode!r} is not "
+                         f"'median' or 'fixed'{hint}")
+    if threshold_mode == "fixed":
+        # Tang et al. 2411.07620 §4.2.2 — TIME-COLUMN selection: the
+        # low-frequency band (≤ freq_cutoff_hz, their <50 MHz) is only the
+        # DETECTION band. Time columns whose band amplitude clears the FIXED
+        # threshold (their 0.02 A.U.) keep their FULL spectrum (preserving
+        # ~3 ns spike structure the band itself could never represent);
+        # all other columns are zeroed. Record-length independent; the
+        # threshold is in scipy STFT units and must be calibrated for our
+        # scaling (sim.tang2024_validate.paper_stft_fixed_threshold).
+        thr = float(fixed_threshold if fixed_threshold is not None
+                    else amp_threshold)
+        det = np.abs(Zxx[f <= freq_cutoff_hz, :])
+        col_ok = det.max(axis=0) >= thr if det.size else \
+            np.zeros(Zxx.shape[1], dtype=bool)
+        # Dilate the kept-column mask by half a window: the Gaussian STFT
+        # window smears a spike's band energy across ~±nperseg/2 columns, so
+        # bare thresholding keeps only the spike-center columns and truncates
+        # the wings (charge loss). The paper's fig-10c candidate mask covers
+        # the full pulse region; dilation reproduces that.
+        if col_ok.any():
+            w = max(nperseg // 2, 1)
+            kern = np.ones(2 * w + 1)
+            col_ok = np.convolve(col_ok.astype(float), kern,
+                                 mode="same") > 0
+        Zxx_filtered = Zxx.copy()
+        Zxx_filtered[:, ~col_ok] = 0.0
+    else:
+        Zxx_filtered = Zxx.copy()
+        Zxx_filtered[f > freq_cutoff_hz, :] = 0.0
+        abs_Zxx = np.abs(Zxx_filtered)
+        noise_level = np.median(abs_Zxx[abs_Zxx > 0])
+        Zxx_filtered[abs_Zxx < amp_threshold * noise_level] = 0.0
     _, u_denoised = istft(Zxx_filtered, fs=fs, window=('gaussian', nperseg / 6),
                           nperseg=nperseg, noverlap=noverlap)
     N = len(u_rec)
@@ -64,6 +125,7 @@ def baseline_noise_bestwindow(
     peak_margin_ns=50.0,
     window_reduce_ns=34.0,
     min_window_ns=64.0,
+    sigma_thresh_scale=1.0,
 ):
     """
     Cascading baseline estimator with logarithmic noise threshold.
@@ -75,6 +137,13 @@ def baseline_noise_bestwindow(
       4. If nothing passes threshold, return best noisy fallback with passed=False.
 
     Logarithmic σ threshold: 7 ADC at 200 ns → 1.5 ADC at 64 ns.
+
+    Units: despite the historical ``_adc`` names, ``max_baseline_adc`` /
+    ``peak_height_adc`` and the σ thresholds are in mV. The log-σ anchors
+    (7 mV @ 200 ns → 1.5 mV @ 64 ns) are absolute, detector-independent
+    constants — a high-noise detector (e.g. the σ=12 mV ``noisy`` regime) can
+    never pass this gate; exposing the anchors is a tracked follow-up. Note the
+    forward scan returns the EARLIEST passing window, not the quietest.
 
     Returns:
         (baseline, sigma, (t_start, t_end), window_bins, passed)
@@ -116,7 +185,11 @@ def baseline_noise_bestwindow(
             if search_end_bin < w:
                 cur_win_ns -= window_reduce_ns
                 continue
-            sigma_thresh = _A_LOG * np.log(cur_win_ns) + _B_LOG
+            # sigma_thresh_scale scales the absolute-mV anchors (default 1.0 =
+            # legacy; >1 admits noisier detectors — profile knob
+            # `baseline_sigma_scale`).
+            sigma_thresh = (_A_LOG * np.log(cur_win_ns) + _B_LOG) \
+                * sigma_thresh_scale
             earliest_good = None
             best_noisy = None
             for s in range(0, search_end_bin - w + 1, step):
@@ -256,6 +329,19 @@ def wavelet_denoise(
     Raises
     ------
     ImportError if PyWavelets is not installed.
+
+    Notes
+    -----
+    Known limitations (documented, deliberately unchanged — this is one of the
+    instruments under benchmark):
+    - the universal threshold √(2·ln N) assumes independent coefficients; SWT
+      details are strongly correlated, so the effective threshold is more
+      aggressive than the nominal Donoho level;
+    - ``mode="edge"`` padding to a multiple of 2**level introduces a boundary
+      step the detail bands see as a discontinuity (cropped afterwards, so
+      silent);
+    - a level with σ ≤ 0 (MAD = 0) is passed through untouched with no
+      diagnostic.
     """
     try:
         import pywt

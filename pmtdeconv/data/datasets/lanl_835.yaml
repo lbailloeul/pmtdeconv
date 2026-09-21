@@ -1,0 +1,32 @@
+# Dataset card for lanl_835 — generated from the in-code preset by
+#   pmtdeconv dataset init lanl_835 --from-seed
+#
+# Copy this to describe your OWN detector: edit data_dir, dt_ns,
+# polarity and branches, drop `template` (build your own per tube),
+# then:  pmtdeconv dataset lint <your card>
+#
+# ${PMTDECONV_DATA_ROOT} resolves the same way the in-code presets
+# do: $PMTDECONV_DATA_ROOT, else the nearest data/ directory.
+#
+# `meta:` is free-form provenance — tube serial, source, ELOG ref,
+# contact. pmtdeconv never interprets it; it copies it into every
+# manifest so a shared output directory says what produced it.
+name: lanl_835
+data_dir: ${PMTDECONV_DATA_ROOT}/835_real
+file_glob: MilliQan_Run835.*_triple.root
+format: object
+tree: Events
+branches: auto
+dt_ns: auto
+polarity: -1
+cosine_cutoff_mhz: 100.0
+spe_band:
+- 5.0
+- 25.0
+offline_data_dir: ${PMTDECONV_DATA_ROOT}/835
+offline_file_glob: MilliQan_Run835.*_triple_offline.root
+pmt_type: lanl_fast
+pe_band:
+- 0.0
+- 20.0
+notes: LANL Run 835 (object format, nested per-event arrays).

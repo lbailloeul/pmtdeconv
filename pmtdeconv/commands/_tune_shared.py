@@ -271,9 +271,16 @@ def _collapse_tuned(merged: Dict[str, dict]) -> Dict[str, dict]:
 
     1. drops prior ``*-latest-*`` aliases (regenerated below);
     2. keeps, per ``(base_dataset, frozen overrides)`` signature, only the
-       NEWEST dated snapshot (immutable audit trail, one per distinct result);
+       OLDEST dated snapshot — its date = when this result FIRST won. Dated
+       names are immutable provenance anchors (manifests record them), so a
+       re-run that reproduces the current winner must be a NO-OP, never a
+       rename. (Until 2026-07-02 "newest wins" re-stamped the entry with the
+       re-run's date: the old name vanished, manifests referencing it stopped
+       resolving, and the date no longer said when the numbers were first
+       measured.)
     3. emits a stable ``<prefix>-tuned-latest-<suffix>`` alias per name-family
-       (date stripped) pointing at the most recent winner.
+       (date stripped) pointing at the most recent DISTINCT winner — always
+       via its retained (first-appearance) name.
 
     Non-dated, non-alias entries are passed through untouched.
     """
@@ -281,18 +288,21 @@ def _collapse_tuned(merged: Dict[str, dict]) -> Dict[str, dict]:
     passthrough = {n: p for n, p in merged.items()
                    if not _DATE_RE.search(n) and "-latest-" not in n}
 
-    # (2) newest dated snapshot per identical-config signature
+    def _sig(p: dict) -> tuple:
+        return (p["base_dataset"], tuple(sorted(p["overrides"].items())))
+
+    # (2) oldest dated snapshot per identical-config signature
     by_sig: Dict[tuple, str] = {}
-    for name in sorted(dated):           # ascending date → newest wins
-        p = dated[name]
-        sig = (p["base_dataset"], tuple(sorted(p["overrides"].items())))
-        by_sig[sig] = name
+    for name in sorted(dated):           # ascending date → FIRST occurrence wins
+        by_sig.setdefault(_sig(dated[name]), name)
     kept = {dated[n]["name"]: dated[n] for n in set(by_sig.values())}
 
-    # (3) one `-latest-` alias per family (name with the date stripped)
+    # (3) one `-latest-` alias per family. The newest dated NAME per family
+    # picks the winning config; the alias references that config's RETAINED
+    # snapshot so it never points at a collapsed (deleted) name.
     families: Dict[str, dict] = {}
     for name in sorted(dated):           # ascending → newest wins per family
-        families[_DATE_RE.sub("-latest-", name)] = dated[name]
+        families[_DATE_RE.sub("-latest-", name)] = dated[by_sig[_sig(dated[name])]]
     aliases = {
         fam: {"name": fam, "base_dataset": p["base_dataset"],
               "overrides": dict(p["overrides"]),

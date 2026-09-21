@@ -27,9 +27,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                    help="Cosine cutoff in MHz (default: 50 for Cd109, "
                         "dataset's preset value otherwise).")
     g.add_argument("--nbins", type=int, default=120)
-    g.add_argument("--proc-root", type=str, default=None,
-                   help="DRSprocessing ROOT file. Default: "
+    g.add_argument("--file", dest="file", type=str, default=None,
+                   help="Exact DRSprocessing ROOT FILE to read. Default: "
                         "<data-root>/Run<RUN>.root.")
+    # Renamed from --proc-root on 2026-09-21 (same spelling as raw-area drs).
+    from pmtdeconv.cli import add_renamed_alias
+    add_renamed_alias(g, "--proc-root", "--file", dest="file")
     g.add_argument("--template", type=str, default=None,
                    help="SPE template CSV. Default: dataset's preset.")
     g.add_argument("--board", type=int, default=2984,
@@ -83,8 +86,8 @@ def run(args: argparse.Namespace) -> int:
     # DRSprocessing file (Run<N>.root, with area_/voltages_ branches) sits
     # directly under the data root — same dir as the flattened_Run<N>.root
     # waveform files, no `processed/` subdir.
-    if args.proc_root:
-        proc_root = Path(args.proc_root)
+    if args.file:
+        proc_root = Path(args.file)
     elif settings.data_root is not None:
         proc_root = Path(settings.data_root) / f"Run{run_num}.root"
     else:
@@ -92,7 +95,7 @@ def run(args: argparse.Namespace) -> int:
     if not proc_root.exists():
         raise SystemExit(
             f"DRSprocessing ROOT not found: {proc_root}\n"
-            f"Pass --proc-root <path>, or --data-root <dir> holding "
+            f"Pass --file <path>, or --data-root <dir> holding "
             f"Run{run_num}.root.")
 
     # Cosine cutoff: explicit flag > dataset preset > 50 MHz (legacy fallback).

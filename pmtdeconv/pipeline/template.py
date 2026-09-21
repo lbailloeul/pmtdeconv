@@ -2,7 +2,7 @@
 
 :meth:`Template.from_settings` is the single resolution chain for the
 per-channel SPE kernel, replacing the na22fmt-preference logic + silent generic
-fallback that were buried in ``commands/pulse.py::_build_legacy_args`` and the
+fallback that were buried in ``commands/hits.py::_build_legacy_args`` and the
 duplicated ``FALLBACK_TEMPLATE`` constants across the pipeline god-modules.
 
 Resolution order:
@@ -27,14 +27,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from pmtdeconv.core.kernels import MILLIQAN_TEMPLATE
 from pmtdeconv.pipeline.calibration import ProvenanceRecord
 from pmtdeconv.presets.template_catalog import TEMPLATE_CATALOG
-from pmtdeconv.utils import MILLIQAN_TEMPLATE
 
 # The generic built-in fallback the pipeline god-modules use when a branch has
-# no per-channel template (Na22 lab uses MilliQan PMTs). ``A`` and ``t0`` cancel
-# in the FFT division; ``t0`` is pinned to 0.0 to match the legacy
-# ``process_hits.FALLBACK_TEMPLATE`` exactly.
+# no per-channel template (Na22 lab uses MilliQan PMTs). ``A`` cancels via
+# unit-area kernel normalization; ``t0`` does NOT cancel (a nonzero t0
+# time-shifts u_rec by −t0) — pinning ``t0=0.0`` here is load-bearing and
+# matches the legacy ``process_hits.FALLBACK_TEMPLATE`` exactly.
 FALLBACK_TEMPLATE: Dict[str, float] = {**MILLIQAN_TEMPLATE, "t0": 0.0}
 
 
@@ -102,6 +103,46 @@ class Template:
                     and Path(template_csv) == Path(default_csv)):
                 resolved = Path(na22fmt)
             source = "explicit" if prov.get("template_csv") == "cli" else "dataset"
+
+            # A configured CSV that does not EXIST used to sail straight
+            # through here: ``load_template(strict=False)`` printed one warning,
+            # returned {}, and every branch quietly fell back to the generic
+            # kernel — while the manifest still recorded
+            # ``source="explicit", csv=<the missing path>``. The run looked
+            # complete and the charges looked plausible, but they came from the
+            # wrong response function and the provenance record named a file
+            # that was never read. Fail loudly instead; the toolkit does not
+            # invent a detector response. (--dry-run still inspects config
+            # without hard-failing, matching step 5 below.)
+            if not resolved.exists() and not dry_run:
+                if allow_generic:
+                    print(f"[template] configured CSV not found ({resolved}); "
+                          f"--allow-generic-fallback given -> generic kernel "
+                          f"(charges NOT calibrated).")
+                    return cls(csv_path=None, pmt_type=pmt_type,
+                               provenance=_rec(
+                                   "generic",
+                                   detail=f"allow_generic_fallback; "
+                                          f"missing {resolved}"))
+                origin = ("--template" if source == "explicit"
+                          else f"the {dataset!r} dataset default")
+                raise TemplateResolutionError(
+                    f"\nSPE template not found: {resolved}\n"
+                    f"  (resolved from {origin})\n\n"
+                    f"Deconvolution divides by the measured single-photoelectron "
+                    f"response. pmtdeconv will not silently substitute a generic "
+                    f"kernel: the charges would look plausible and be wrong.\n"
+                    f"  Fix one of:\n"
+                    f"    build one for your detector:\n"
+                    f"        pmtdeconv template build --dataset "
+                    f"{dataset or '<dataset>'}\n"
+                    f"        pmtdeconv template aggregate\n"
+                    f"    point at an existing CSV:\n"
+                    f"        --template /path/to/spe_template.csv\n"
+                    f"    accept the generic kernel (timing only; charges NOT "
+                    f"calibrated):\n"
+                    f"        --allow-generic-fallback\n")
+
             return cls(csv_path=resolved, pmt_type=pmt_type,
                        provenance=_rec(source, detail=f"csv={resolved}"))
 

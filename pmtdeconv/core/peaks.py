@@ -40,7 +40,8 @@ def _walk_to_trough_left(u_rec, start, max_bins):
     return i
 
 
-def find_integration_windows(u_rec, peaks, pad_bins, neighbor_min_ratio=0.1):
+def find_integration_windows(u_rec, peaks, pad_bins, neighbor_min_ratio=0.1,
+                             window_extend_frac=1.0):
     """
     For each peak:
       1. Walk outward to the left/right troughs (natural pulse boundaries).
@@ -49,15 +50,29 @@ def find_integration_windows(u_rec, peaks, pad_bins, neighbor_min_ratio=0.1):
       3. Cap at the shared trough with each adjacent peak only if that neighbor
          is at least neighbor_min_ratio × the current peak's height. Noise peaks
          below this threshold are ignored so they don't clip the main window.
+
+    Windows are returned parallel to ``peaks`` in the order given. The
+    neighbor-capping step needs *time-adjacent* neighbors, so the walk always
+    runs on a time-sorted copy and the result is mapped back to the input
+    order — callers may pass peaks in any order (e.g. tallest-first, the
+    ``--no-vetoes`` default). Before 2026-07-01 a height-ordered input made
+    the neighbor distances negative and produced degenerate (empty) windows,
+    i.e. zero charge on every multi-peak event.
     """
+    peaks_in = np.asarray(peaks)
+    order = np.argsort(peaks_in, kind="stable")
+    peaks = peaks_in[order]
     N = len(u_rec)
     windows = []
     for i, pk in enumerate(peaks):
         hi_trough = _walk_to_trough_right(u_rec, pk, pad_bins)
         lo_trough = _walk_to_trough_left(u_rec, pk, pad_bins)
         pulse_width = hi_trough - lo_trough
-        lo = max(lo_trough - pulse_width, 0)
-        hi = min(hi_trough + pulse_width + 1, N)
+        # window_extend_frac=1.0 reproduces the legacy full-pulse-width
+        # extension exactly (int(round(1.0*w)) == w).
+        ext = int(round(window_extend_frac * pulse_width))
+        lo = max(lo_trough - ext, 0)
+        hi = min(hi_trough + ext + 1, N)
         h_pk = u_rec[pk]
         if i > 0:
             prev_pk = peaks[i - 1]
@@ -70,7 +85,38 @@ def find_integration_windows(u_rec, peaks, pad_bins, neighbor_min_ratio=0.1):
                 shared = _walk_to_trough_left(u_rec, next_pk, min(pad_bins, next_pk - pk))
                 hi = min(hi, shared + 1)
         windows.append((lo, hi))
-    return windows
+    # Map back to the caller's peak order (identity when input was sorted).
+    out = [None] * len(windows)
+    for sorted_i, orig_i in enumerate(order):
+        out[orig_i] = windows[sorted_i]
+    return out
+
+
+def cfd50_time(u, pk, t):
+    """50%-of-peak rising-edge crossing time ('half-time', CFD-50) for the
+    pulse peaking at index ``pk``, sub-sample linear-interpolated.
+
+    The MQAna ``halftime`` estimator: walk left from the apex to the first
+    sample at or below half-maximum and interpolate the crossing. Lower
+    jitter than the apex argmax — the rising edge is steep and, for clipped
+    pulses, unsaturated — which is the basis of the half-time timewalk
+    analysis. Same CFD-50 logic the SPE template builder uses to align
+    pulses (``template_build_impl.select_and_align_Y``).
+
+    Returns the crossing time in the units of ``t``. Falls back to ``t[pk]``
+    when the peak is non-positive (no meaningful half level) or the local
+    rise is flat.
+    """
+    peak_val = float(u[pk])
+    if not np.isfinite(peak_val) or peak_val <= 0:
+        return float(t[pk])
+    vthr = 0.5 * peak_val
+    j = int(pk)
+    while j > 0 and u[j] > vthr:
+        j -= 1
+    denom = float(u[j + 1] - u[j])
+    cfd = j + (vthr - float(u[j])) / denom if denom > 0 else float(j)
+    return float(np.interp(cfd, np.arange(len(t)), t))
 
 
 def fwhm_ns(u, pk, dt_ns, max_half_ns=120.0):
@@ -130,7 +176,7 @@ def apply_peak_vetoes(
     afterpulse_window_ns=40.0,
     afterpulse_height_ratio=5.0,
     post_sat_cutoff_bin=None,
-    dt_ns=1.25,
+    dt_ns,          # required: the silent 1.25 ns default matched no dataset
     raw_wave=None,
     raw_ped=0.0,
     min_raw_amp=15.0,
@@ -141,10 +187,8 @@ def apply_peak_vetoes(
 
     Veto chain:
       1. out_of_time       — peak before t_peak_min_ns or after t_peak_max_ns
-                             (a plain time-window cut; renamed 2026-05-30 from
-                             the misnomer "fft_wraparound" — with linear
-                             (zero-padded) deconvolution there is no circular
-                             wraparound, this just enforces the physical window)
+                             (a plain physical-time-window cut; renamed
+                             2026-05-30 from the misnomer "fft_wraparound")
       2. no_raw_peak       — max raw amplitude in window < min_raw_amp ADC above baseline
       3. afterpulse_veto   — small peak within fixed ns window of a much taller peak
       4. post_sat_shift    — peak at or after the first baseline-shifted bin
@@ -159,8 +203,7 @@ def apply_peak_vetoes(
     charge = float(np.sum(window_samples))
 
     # Out-of-time veto: reject peaks outside the physical signal window
-    # [t_peak_min_ns, t_peak_max_ns]. (Formerly "fft_wraparound" — see the
-    # veto-chain docstring; the name predates linear deconvolution.)
+    # [t_peak_min_ns, t_peak_max_ns]. (Formerly "fft_wraparound".)
     if t_peak < t_peak_min_ns:
         return False, "out_of_time", charge
     if t_peak_max_ns is not None and t_peak > t_peak_max_ns:

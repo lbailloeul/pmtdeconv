@@ -67,6 +67,18 @@ HIT_RESULTS_COLUMNS: Tuple[str, ...] = (
     # Saturated events are kept + flagged (timing recovered, charge unreliable);
     # appended at the END so this is a no-version-bump schema change.
     "saturated",
+    # 2026-07-01: CFD-50 rising-edge crossing time ('half-time', sub-sample) —
+    # the MQAna `halftime`, lower-jitter timewalk estimator. `t_peak` keeps its
+    # historical apex-argmax meaning; downstream picks a column via
+    # `timewalk --time-col`. Appended at the END: no version bump.
+    "t_half",
+    # 2026-07-28 (0–20 PE re-scope): PE-scale columns, appended at the END (no
+    # version bump). `npe_raw` = deconv-INDEPENDENT raw nPE estimate
+    # (mqana-style narrow-window raw charge / spe_charge); `in_regime` = npe_raw
+    # within the pe_band (default 0–20; the deconvolution applicability
+    # domain); `npe` = deconvolved per-peak charge / spe_charge. All blank when
+    # no spe_charge is calibrated (see `gain calibrate`) — never guessed.
+    "npe_raw", "in_regime", "npe",
 )
 
 HIT_RESULTS_SCHEMA = CsvSchema(
@@ -75,8 +87,11 @@ HIT_RESULTS_SCHEMA = CsvSchema(
     columns=HIT_RESULTS_COLUMNS,
     description=(
         "Per-peak deconvolution output from `pulse`. "
-        "`peak_id` orders peaks chronologically (or by amplitude when "
-        "--peak-order=tallest). `reason` is empty for successful peaks "
+        "`peak_id` orders peaks chronologically (by amplitude when "
+        "--peak-order=tallest; first-significant-then-rest when "
+        "--peak-order=first). `t_peak` is the deconv apex time (sample "
+        "grid); `t_half` the CFD-50 rising-edge crossing (sub-sample). "
+        "`reason` is empty for successful peaks "
         "and one of out_of_time / afterpulse_veto / post_sat_shift / "
         "negative_charge / no_raw_peak / no_veto / no_peaks_found for "
         "rejected ones."

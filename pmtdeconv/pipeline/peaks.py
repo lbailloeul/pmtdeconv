@@ -9,14 +9,12 @@ tallest peak gives back the photopeak as peak 1.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
 from scipy.signal import find_peaks
 
-from pmtdeconv.utils import (                                      # noqa: E402
+from pmtdeconv.core.peaks import (
     find_integration_windows,
     _walk_to_trough_left,
     _walk_to_trough_right,

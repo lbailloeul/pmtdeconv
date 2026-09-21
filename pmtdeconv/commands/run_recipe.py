@@ -31,15 +31,22 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Raw-area source for na22-timewalk (default: drs).",
     )
     parser.add_argument(
-        "--area-root",
+        "--area-file",
+        dest="area_file",
         default=None,
-        help="Explicit DRSprocessing ROOT file for na22-timewalk.",
+        help="Exact DRSprocessing ROOT FILE for na22-timewalk.",
     )
     parser.add_argument(
-        "--proc-root",
+        "--proc-file",
+        dest="proc_file",
         default=None,
-        help="Explicit DRSprocessing ROOT file for na22-energy.",
+        help="Exact DRSprocessing ROOT FILE for na22-energy.",
     )
+    # Renamed from --area-root / --proc-root on 2026-09-21: "-root" named the
+    # file FORMAT and read like a sibling of --data-root, which is a DIRECTORY.
+    from pmtdeconv.cli import add_renamed_alias
+    add_renamed_alias(parser, "--area-root", "--area-file", dest="area_file")
+    add_renamed_alias(parser, "--proc-root", "--proc-file", dest="proc_file")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -141,8 +148,8 @@ def _run_na22_timewalk(args: argparse.Namespace) -> int:
         "raw-area", args.raw_source, *common,
         "--out-dir", str(area_dir),
     ]
-    if args.raw_source == "drs" and args.area_root:
-        area_argv += ["--root", args.area_root]
+    if args.raw_source == "drs" and args.area_file:
+        area_argv += ["--file", args.area_file]
     _execute("raw area", area_argv)
 
     _execute(
@@ -151,7 +158,8 @@ def _run_na22_timewalk(args: argparse.Namespace) -> int:
     )
 
     area_csv = area_dir / f"area_{args.raw_source}_run{run_number}.csv"
-    pulse_csv = hits_dir / "deconv_pulse.csv"
+    from pmtdeconv.io.deconv_pulse import DECONV_PULSE_CSV
+    pulse_csv = hits_dir / DECONV_PULSE_CSV
     # Belt-and-suspenders: the raw-area step now raises (with actionable
     # guidance) when its input is missing, so we normally abort before here.
     # But guard against a raw-area step that ran yet produced no CSV, so the
@@ -169,7 +177,7 @@ def _run_na22_timewalk(args: argparse.Namespace) -> int:
         [
             "timewalk", "run", *common,
             "--area-csv", str(area_csv),
-            "--pulse-csv", str(pulse_csv),
+            "--hits-csv", str(pulse_csv),
             "--out-dir", str(timewalk_dir),
         ],
     )
@@ -187,8 +195,8 @@ def _run_na22_energy(args: argparse.Namespace) -> int:
     root = _recipe_root(args, args.recipe, runs[0])
     common = _base_common(args, dataset="na22", runs=runs)
     argv = ["plot", "energy", *common, "--out-dir", str(root / "energy")]
-    if args.proc_root:
-        argv += ["--proc-root", args.proc_root]
+    if args.proc_file:
+        argv += ["--file", args.proc_file]
     _execute("energy comparison", argv)
     print()
     print(f"Results: {root}")

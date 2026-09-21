@@ -190,21 +190,94 @@ def test_card_settings_block_subsumes_config(tmp_path):
     assert s.cosine_cutoff_mhz == get_dataset("na22").cosine_cutoff_mhz  # inherited
 
 
-def test_dataset_resolves_config_preset_name():
-    """--dataset <config-name> == --preset <config-name> (collapsed entry)."""
+def test_dataset_refuses_a_config_preset_name():
+    """--dataset takes a DETECTOR; a preset name must be refused.
+
+    Inverted 2026-09-18. This test previously asserted the opposite — that
+    ``--dataset <preset>`` resolved identically to ``--preset <preset>``. That
+    collapse gave three spellings for one run and allowed
+    ``--dataset P1 --preset P2`` to stack two presets while recording only P2,
+    so the equivalence was removed. Cards keep working: only a name that is
+    *exclusively* a preset is refused.
+    """
     from types import SimpleNamespace
     from pmtdeconv.presets import resolve_settings
     from pmtdeconv.presets.configs import CONFIGS
     name = "na22-timewalk-winning-2026-05"
     assert name in CONFIGS
-    s_ds, _ = resolve_settings(SimpleNamespace(dataset=name),
-                               require_data_root=False)
+
+    with pytest.raises(SystemExit) as exc:
+        resolve_settings(SimpleNamespace(dataset=name),
+                         require_data_root=False)
+    assert f"--preset {name}" in str(exc.value)
+
+    # the preset spelling is unaffected
     s_pre, _ = resolve_settings(SimpleNamespace(preset=name),
                                 require_data_root=False)
-    for f in ("cosine_cutoff_mhz", "wthresh_k", "no_vetoes", "denoiser",
-              "wavelet", "wlevel", "wmode"):
-        assert getattr(s_ds, f) == getattr(s_pre, f), f
+    assert s_pre.dataset == "na22"
+    assert s_pre.config_preset_name == name
 
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ─── meta block + unknown-key detection (2026-09-18) ──────────────
+
+def test_meta_block_is_carried_to_settings_and_manifest(tmp_path):
+    """A card's free-form `meta:` travels with the run.
+
+    Cards previously had nowhere to put provenance a human needs — tube
+    serial, source, ELOG ref, who to ask. `notes` stopped at the preset and
+    only showed in `info datasets`, and any custom key was dropped silently.
+    Both now reach Settings, and write_manifest serializes every Settings
+    field, so a shared output directory says which detector produced it.
+    """
+    from types import SimpleNamespace
+    from pmtdeconv.presets import resolve_settings
+    card = tmp_path / "d.yaml"
+    card.write_text(yaml.safe_dump({
+        "name": "d", "data_dir": str(FIXTURE_DIR), "dt_ns": 0.5,
+        "notes": "bench setup",
+        "meta": {"pmt_serial": "HPK-1234", "elog": "E41537"},
+    }))
+    ds = resolve_dataset(str(card))
+    assert ds.meta == {"pmt_serial": "HPK-1234", "elog": "E41537"}
+    assert ds.notes == "bench setup"
+
+    settings, _ = resolve_settings(SimpleNamespace(dataset=str(card)),
+                                   require_data_root=False)
+    assert settings.meta["pmt_serial"] == "HPK-1234"
+    assert settings.notes == "bench setup"
+
+
+def test_unknown_card_key_is_reported_not_silently_dropped(tmp_path, capsys):
+    """A typo'd key must be visible. `polarty: -1` used to lint clean and run
+    with the default polarity — a setting the expert believed was in effect."""
+    from pmtdeconv.presets.cards import suggest_card_key, unknown_card_keys
+    raw = {"name": "d", "polarty": -1, "operator": "someone"}
+    assert unknown_card_keys(raw) == ["operator", "polarty"]
+    assert suggest_card_key("polarty") == "polarity"
+
+    card = tmp_path / "d.yaml"
+    card.write_text(yaml.safe_dump({
+        "name": "d", "data_dir": str(FIXTURE_DIR), "polarty": -1,
+    }))
+    ds = resolve_dataset(str(card))
+    assert ds.polarity == 1, "the typo must NOT silently set polarity"
+    assert "polarty" in capsys.readouterr().out
+
+
+def test_manifest_survives_unserializable_meta(tmp_path):
+    """YAML parses `taken: 2026-09-01` as a date. An unserializable value used
+    to abort json.dump mid-write, leaving a truncated manifest for a run that
+    had actually succeeded."""
+    import datetime
+    import json
+    from pmtdeconv.io.manifest import write_manifest
+    from pmtdeconv.presets import Settings
+    s = Settings(dataset="d", meta={"taken": datetime.date(2026, 9, 1)})
+    out = tmp_path / "manifest.json"
+    write_manifest(subcommand="area", settings=s, provenance={}, inputs=[],
+                   outputs=[], out_path=out)
+    assert json.loads(out.read_text())["settings"]["meta"]["taken"] == "2026-09-01"

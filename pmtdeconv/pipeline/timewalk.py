@@ -75,16 +75,26 @@ def _fit_gauss(centers: np.ndarray, counts: np.ndarray
 
 def load_deconv_data(area_csv: Path, pulse_csv: Path,
                      ref_branch: str = "d0_ch1",
-                     scan_branch: str = "d0_ch2") -> pd.DataFrame:
-    """Merge per-event area + t_peak into a single DataFrame.
+                     scan_branch: str = "d0_ch2",
+                     time_col: str = "t_peak") -> pd.DataFrame:
+    """Merge per-event area + per-pulse timestamp into a single DataFrame.
 
     Schema: ``(run, cycle, entry, a_ref, a_scan, t_ref, t_scan)``.
     Lifted from ``timewalk_deconv_gif.load_deconv_data`` to keep behavior
-    identical.
+    identical. ``time_col`` picks the pulse-CSV timestamp column:
+    ``t_peak`` (deconv apex, legacy) or ``t_half`` (CFD-50 rising-edge
+    crossing — the lower-jitter MQAna `halftime` estimator).
     """
     area = pd.read_csv(area_csv)
     if "interval" in area.columns:
         area = area[area["interval"] == 0]
+    present = sorted(area["branch"].unique())
+    missing = [b for b in (ref_branch, scan_branch) if b not in present]
+    if missing:
+        raise SystemExit(
+            f"area CSV {area_csv} has no rows for branch(es) {missing}. "
+            f"Branches present: {present}. "
+            f"Fix --ref-branch/--scan-branch.")
     area = area[area["branch"].isin([ref_branch, scan_branch])]
     area_piv = area.pivot_table(
         index=["run", "cycle", "entry"], columns="branch",
@@ -94,11 +104,24 @@ def load_deconv_data(area_csv: Path, pulse_csv: Path,
     area_piv = area_piv.rename(columns={ref_branch: "a_ref", scan_branch: "a_scan"})
 
     hits = pd.read_csv(pulse_csv)
+    if time_col not in hits.columns:
+        raise SystemExit(
+            f"pulse CSV {pulse_csv} has no {time_col!r} column. "
+            f"(`t_half` is emitted by `pmtdeconv hits` runs from 2026-07-01 "
+            f"on — re-run `hits` to regenerate the CSV, or use "
+            f"--time-col t_peak.)")
     hits = hits[(hits["success"] == True) & (hits["peak_id"] == 1.0)]
+    present = sorted(hits["branch"].unique())
+    missing = [b for b in (ref_branch, scan_branch) if b not in present]
+    if missing:
+        raise SystemExit(
+            f"pulse CSV {pulse_csv} has no successful primary pulses for "
+            f"branch(es) {missing}. Branches present: {present}. "
+            f"Fix --ref-branch/--scan-branch.")
     hits = hits[hits["branch"].isin([ref_branch, scan_branch])]
     hit_piv = hits.pivot_table(
         index=["run", "cycle", "entry"], columns="branch",
-        values="t_peak", aggfunc="first",
+        values=time_col, aggfunc="first",
     ).reset_index()
     hit_piv.columns.name = None
     hit_piv = hit_piv.rename(columns={ref_branch: "t_ref", scan_branch: "t_scan"})
@@ -122,6 +145,7 @@ def scan_timewalk(
     a_scan_windows: Optional[Sequence[Tuple[float, float]]] = None,
     ref_branch: str = "d0_ch1",
     scan_branch: str = "d0_ch2",
+    time_col: str = "t_peak",
     xrange: Tuple[float, float] = (-25.0, 10.0),
     bin_width_ns: float = 0.5051,
     dt_offset: float = 0.0,
@@ -135,7 +159,8 @@ def scan_timewalk(
     (see ``pmtdeconv/io/schemas.TIMEWALK_SUMMARY_SCHEMA``).
     """
     df = load_deconv_data(Path(area_csv), Path(pulse_csv),
-                          ref_branch=ref_branch, scan_branch=scan_branch)
+                          ref_branch=ref_branch, scan_branch=scan_branch,
+                          time_col=time_col)
 
     # Δt = t_scan - t_ref (MQAna convention). The legacy deconv script
     # stored t_ref - t_scan internally; flip_sign=True (default) matches

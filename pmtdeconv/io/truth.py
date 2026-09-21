@@ -8,10 +8,16 @@ clipped events. ``pmtdeconv tune`` reads these to score sweeps; the
 ``--diagnostic-events`` flag on ``pulse`` also loads them to compute
 per-event truth-match if a fixture path is being processed.
 
-Schema (frozen for PR 10; bump :attr:`TRUTH_SCHEMA_VERSION` to invalidate):
+Schema (v1.1; bump :attr:`TRUTH_SCHEMA_VERSION` to invalidate):
 
     event, branch, true_amp_mv, true_center_ns, true_charge_pVs,
-    true_sigma_ns, saturated
+    true_sigma_ns, saturated  [+ optional: pulse_id, n_pe]
+
+v1.1 (2026-07-28, 0–20 PE re-scope): ``pulse_id`` (per-pulse row index within
+an event — MULTI-PULSE truth, emitted by the pileup regimes and the Tang MC)
+and ``n_pe`` (true photoelectron count) are recognized OPTIONAL columns that
+:func:`save_truth` PRESERVES. Before v1.1 ``save_truth`` silently dropped
+them (``df[REQUIRED_COLUMNS]``), which made multi-pulse truth unscorable.
 """
 from __future__ import annotations
 
@@ -21,7 +27,7 @@ from typing import List
 import pandas as pd
 
 
-TRUTH_SCHEMA_VERSION = "1.0"
+TRUTH_SCHEMA_VERSION = "1.1"
 
 REQUIRED_COLUMNS: List[str] = [
     "event",
@@ -31,6 +37,12 @@ REQUIRED_COLUMNS: List[str] = [
     "true_charge_pVs",
     "true_sigma_ns",
     "saturated",
+]
+
+# Recognized optional columns, preserved by save_truth when present.
+OPTIONAL_COLUMNS: List[str] = [
+    "pulse_id",   # per-pulse index within (event, branch) — multi-pulse truth
+    "n_pe",       # true photoelectron count of the pulse
 ]
 
 
@@ -59,7 +71,11 @@ def load_truth(path: Path | str, strict: bool = True) -> pd.DataFrame:
 
 
 def save_truth(df: pd.DataFrame, path: Path | str) -> Path:
-    """Write a truth DataFrame, validating columns first."""
+    """Write a truth DataFrame, validating columns first.
+
+    Preserves the recognized :data:`OPTIONAL_COLUMNS` (``pulse_id``,
+    ``n_pe``) when present — multi-pulse truth survives the round-trip.
+    """
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         raise TruthSchemaError(
@@ -67,7 +83,8 @@ def save_truth(df: pd.DataFrame, path: Path | str) -> Path:
             f"Got {list(df.columns)}.")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df[REQUIRED_COLUMNS].to_csv(path, index=False)
+    cols = REQUIRED_COLUMNS + [c for c in OPTIONAL_COLUMNS if c in df.columns]
+    df[cols].to_csv(path, index=False)
     return path
 
 

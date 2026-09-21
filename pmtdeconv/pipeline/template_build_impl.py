@@ -21,7 +21,7 @@ from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 
 from pmtdeconv import PROJECT_ROOT
-from pmtdeconv.utils import spe_overshoot
+from pmtdeconv.core.kernels import spe_overshoot
 
 N_SAMP = 1024
 
@@ -43,41 +43,56 @@ def _resolve_data_dir(d):
 BASE_BINS, PRE_BINS = 30, 50
 PK_CENTER = 120                    # align all peaks to this sample
 
-DATASETS = [
-    dict(name="Cd109",         dir="../../../data/Cd109_lab",    glob="flattened_Run*.root",
-         format="flat", polarity=1, dt=1.432,
-         channels=["d0_ch1", "d0_ch2"], spe_band=(5, 25), max_events=30000),
-    # Na22 trigger saturates at ~950 mV; true SPE rare. use dominant amplitude band.
-    dict(name="Na22",          dir="../../../data/Na22_lab",     glob="flattened_Run*.root",
-         format="flat", polarity=1, dt=0.5051,
-         channels=["d0_ch1", "d0_ch2"], spe_band=(50, 200), max_events=30000),
-    # Runs 66727+ (2026-06-10): 3-channel bipolar mode, NEGATIVE-going,
-    # ±500 mV window. Use with the CLI --runs filter so the 2-channel
-    # positive-going 65xxx/66518 files in the same dir are not swept up.
-    dict(name="Na22_3ch",      dir="../../../data/Na22_lab",     glob="flattened_Run*.root",
-         format="flat", polarity=-1, dt=0.5045844,
-         channels=["d0_ch1", "d0_ch2", "d0_ch3"], spe_band=(50, 200), max_events=30000),
-    dict(name="MilliQan_1000", dir="../../../data/1000_MQ_real", glob="flattened_waveform_Run1000.*.root",
-         format="flat", polarity=1, dt=1.25,
-         channels="auto", spe_band=(5, 30), max_events=10000),
-    dict(name="MilliQan_2150", dir="../../../data/2150",         glob="flattened_waveform_*.root",
-         format="flat", polarity=1, dt=1.25,
-         channels="auto", spe_band=(5, 30), max_events=10000),
-    # LANL = same PMT as Cd109 -> Cd109 SPE band (5,25]. Pulses NEGATIVE-going -> polarity=-1.
-    # 806_real has flattened d0_chXX waveforms; 835_real and movedBar use object format
-    # (event/digitizers/digitizers.waveform[16][1024]). Many subruns -> many templates/ch.
-    dict(name="LANL_806",      dir="../../../data/806_real",     glob="flattened_waveform_*.root",
-         format="flat",   polarity=-1, dt=1.25,
-         channels="auto", spe_band=(5, 25), max_events=1000, max_files=10),
-    dict(name="LANL_835",      dir="../../../data/835_real",     glob="MilliQan_Run835.*_triple.root",
-         format="object", polarity=-1, dt="auto",
-         channels="auto", spe_band=(5, 25), max_events=1000, max_files=10),
-    dict(name="LANL_movedBar", dir="../../../data/movedBar",     glob="MilliQan_Run868.*_triple.root",
-         exclude_glob="*_offline.root",
-         format="object", polarity=-1, dt="auto",
-         channels="auto", spe_band=(5, 25), max_events=1000, max_files=10),
-]
-OUT = Path("outputs/spe_templates_perfile"); OUT.mkdir(parents=True, exist_ok=True)
+DEFAULT_OUT = PROJECT_ROOT / "outputs" / "spe_templates_perfile"
+
+# Per-dataset processing CAPS (build speed only — never science). Everything
+# science-bearing (dir, glob, polarity, dt, channels, spe_band) comes from the
+# ONE dataset registry (presets/datasets.py + YAML cards) via
+# :func:`config_from_preset`; before 2026-07-02 this module carried its own
+# parallel 8-entry registry that drifted from the real one and could only be
+# reached through a hand-maintained alias map.
+BUILD_CAPS = {                       # name -> (max_events, max_files)
+    "milliqan":      (10000, None),
+    "lanl_806":      (1000, 10),     # many subruns -> cap files for speed
+    "lanl_835":      (1000, 10),
+    "lanl_movedBar": (1000, 10),
+}
+DEFAULT_CAPS = (30000, None)
+
+
+def config_from_preset(ds) -> dict:
+    """Adapt a :class:`~pmtdeconv.presets.datasets.DatasetPreset` (or a YAML
+    card resolved through the same registry) into the per-dataset build-config
+    dict this module's ``main`` consumes.
+
+    Notes vs the retired in-module registry:
+    - names are the REGISTRY names (``na22``, ``cd109``, …), so the perfile
+      CSV's ``dataset`` column and the ``stacked_*.npy`` tags now match what
+      every other subcommand calls the dataset;
+    - the old ``MilliQan_2150`` entry (``data/2150``) had no registry
+      equivalent — reproduce it with ``--dataset milliqan --data-root
+      <...>/data/2150``.
+    """
+    channels = (list(ds.branch_pattern)
+                if isinstance(ds.branch_pattern, list) else "auto")
+    max_events, max_files = BUILD_CAPS.get(ds.name, DEFAULT_CAPS)
+    cfg = dict(
+        name=ds.name, dir=str(ds.data_dir), glob=ds.file_glob,
+        format=ds.format, polarity=ds.polarity, dt=ds.dt_ns,
+        channels=channels, spe_band=tuple(ds.spe_band_mv),
+        max_events=max_events,
+    )
+    if ds.exclude_glob:
+        cfg["exclude_glob"] = ds.exclude_glob
+    if max_files:
+        cfg["max_files"] = max_files
+    return cfg
+
+
+def configs_from_registry() -> list:
+    """One build config per dataset in the shared registry."""
+    from pmtdeconv.presets.datasets import DATASETS as _REGISTRY
+    return [config_from_preset(ds) for ds in _REGISTRY.values()]
 
 
 def biexp_smeared(t, A, tau_rise, tau_fall, t0, sigma, ped, dt_s):
@@ -167,9 +182,44 @@ def find_channels(tree, sample=200, min_frac=0.05, vmax_th=10.0):
         cnt = 0
         for w in a:
             w = np.asarray(w, float)
-            cnt += int(((w - np.median(w[:30])).max()) > vmax_th)
+            # POLARITY-AGNOSTIC max(|y - baseline|), matching the object-format
+            # auto-detect. The old positive-going `.max()` missed negative-going
+            # flat channels (e.g. lanl_806, polarity=-1, channels="auto").
+            cnt += int((np.abs(w - np.median(w[:30])).max()) > vmax_th)
         if cnt / n >= min_frac: chans.append(b)
     return chans
+
+
+def _warn_if_no_spe_mode(vmax, spe_band):
+    """Non-SPE guardrail (warn-only; vault 16 design item 4 / 17a).
+
+    A single-photoelectron population shows a pedestal → 1-PE MODE in the
+    amplitude spectrum. If the vMax histogram has no local mode inside the
+    selected band, the band is probably NOT centered on a 1-PE peak (e.g. the
+    legacy na22 (50,200) mV "dominant amplitude band" = multi-PE average, or
+    Run 66810's ~24 mV SPE mode skipped by a (50,200) default). Warn; the
+    expert decides.
+    """
+    v = np.asarray(vmax, dtype=float)
+    v = v[np.isfinite(v) & (v > 0)]
+    if v.size < 200:
+        return                       # too few events to judge a spectrum
+    hi = min(float(np.percentile(v, 99.5)), 2.0 * spe_band[1])
+    if hi <= 0:
+        return
+    counts, edges = np.histogram(v, bins=100, range=(0.0, hi))
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    smooth = np.convolve(counts.astype(float), np.ones(3) / 3.0, mode="same")
+    pk_idx, _ = find_peaks(smooth, prominence=0.05 * float(smooth.max()))
+    modes = centers[pk_idx]
+    in_band_modes = modes[(modes > spe_band[0]) & (modes <= spe_band[1])]
+    if len(in_band_modes) == 0:
+        print(f"  [warn] non-SPE guardrail: no amplitude MODE inside the "
+              f"spe_band ({spe_band[0]:g},{spe_band[1]:g}) mV "
+              f"(modes found: {[round(float(m), 1) for m in modes[:5]]}). "
+              f"The band may not be centered on a single-PE peak — the "
+              f"stacked template could be a multi-PE average. Inspect the "
+              f"amplitude spectrum and set --spe-band on the 1-PE mode.")
 
 
 def select_and_align_Y(Y, dt, spe_band, single_peak=True):
@@ -186,6 +236,7 @@ def select_and_align_Y(Y, dt, spe_band, single_peak=True):
     pre = Y[:, BASE_BINS:BASE_BINS + PRE_BINS]
     pmean = pre.mean(axis=1); prms = pre.std(axis=1)
     in_band = (vmax > spe_band[0]) & (vmax <= spe_band[1])
+    _warn_if_no_spe_mode(vmax, spe_band)
     # baseline quality: |preMean|<=2 mV, preRMS<=2 mV (loose to handle dataset-to-
     # dataset noise differences; toolbox-general). Drops events where the "pre-
     # pulse" window contains a pulse or where baseline drift is large.
@@ -324,7 +375,7 @@ def fit_stacked(stacked, dt, model="biexp"):
                     error=str(e), **nan_over)
 
 
-def process_file(path, cfg, max_events=None, model="biexp"):
+def process_file(path, cfg, out_dir, max_events=None, model="biexp"):
     max_events = max_events or cfg.get("max_events", 10000)
     fmt = cfg.get("format", "flat"); polarity = cfg.get("polarity", 1)
     try:
@@ -346,7 +397,7 @@ def process_file(path, cfg, max_events=None, model="biexp"):
             fit = fit_stacked(stacked, dt, model=model)
             tag = (os.path.basename(path).replace(".root", "")
                    .replace("flattened_", "").replace("waveform_", ""))
-            np.save(OUT / f"stacked_{cfg['name']}_{tag}_{ch}.npy", stacked)
+            np.save(out_dir / f"stacked_{cfg['name']}_{tag}_{ch}.npy", stacked)
             row = dict(dataset=cfg["name"], file=os.path.basename(path), channel=ch,
                        dt_ns=dt, polarity=polarity, n_total=n_total, n_selected=n_sel, **fit)
             rows.append(row)
@@ -362,20 +413,24 @@ def process_file(path, cfg, max_events=None, model="biexp"):
     return rows
 
 
-def plot_comparison(df):
+def plot_comparison(df, out_dir):
     from pmtdeconv.plotting.style import use_clean_style, minimal_axes
     use_clean_style()
     ds_list = df.dataset.unique()
     fig, axes = plt.subplots(len(ds_list), 2, figsize=(15, 3.6 * len(ds_list)), squeeze=False)
     for r, ds in enumerate(ds_list):
         sub = df[df.dataset == ds].reset_index(drop=True)
-        cfg = next(c for c in DATASETS if c["name"] == ds); dt = cfg["dt"]
+        # dt from the fit rows, NOT the build config: for dt="auto" datasets
+        # (object format) the config holds the string "auto" and the true
+        # per-file dt only exists on the row — using cfg["dt"] crashed here
+        # at the END of a long build (2026-07-01 review).
+        dt = float(sub.dt_ns.iloc[0])
         t = np.arange(N_SAMP) * dt
         ax = axes[r][0]
         cmap = plt.cm.viridis(np.linspace(0, 0.9, max(len(sub), 1)))
         for (i, row), col in zip(sub.iterrows(), cmap):
             tag = row.file.replace(".root", "").replace("flattened_", "").replace("waveform_", "")
-            spath = OUT / f"stacked_{ds}_{tag}_{row.channel}.npy"
+            spath = out_dir / f"stacked_{ds}_{tag}_{row.channel}.npy"
             if spath.exists():
                 s = np.load(spath)
                 ax.plot(t, s, lw=1.0, alpha=0.7, color=col,
@@ -414,17 +469,25 @@ def plot_comparison(df):
         ax.set_xticks(x); ax.set_xticklabels(labels, rotation=60, ha="right", fontsize=6)
         ax.set_ylabel("ns"); ax.legend(fontsize=7); minimal_axes(ax)
     fig.tight_layout()
-    p = OUT / "templates_comparison.png"
+    p = out_dir / "templates_comparison.png"
     fig.savefig(p, dpi=120); plt.close(fig)
     print(f"\nsaved {p}")
 
 
-def main(model="biexp"):
-    here = Path(__file__).resolve().parent
-    os.chdir(here)
+def main(datasets=None, *, model="biexp", out_dir=None):
+    """Run the per-(dataset, file, channel) template build.
+
+    ``datasets``: list of build-config dicts (see :func:`config_from_preset`);
+    ``None`` builds every dataset in the shared registry. ``out_dir``:
+    output directory (created if needed; default ``DEFAULT_OUT``). No module
+    globals, no ``os.chdir`` — callers pass everything in.
+    """
+    datasets = datasets if datasets is not None else configs_from_registry()
+    out_dir = Path(out_dir) if out_dir is not None else DEFAULT_OUT
+    out_dir.mkdir(parents=True, exist_ok=True)
     all_rows = []
     import fnmatch
-    for cfg in DATASETS:
+    for cfg in datasets:
         data_dir = _resolve_data_dir(cfg["dir"])
         files = sorted(glob.glob(os.path.join(str(data_dir), cfg["glob"])))
         excl = cfg.get("exclude_glob")
@@ -441,12 +504,12 @@ def main(model="biexp"):
               f"polarity={cfg.get('polarity',1)}  dt={cfg.get('dt')}  band={cfg['spe_band']} ===")
         for fp in files:
             print(f"  {os.path.basename(fp)}")
-            all_rows.extend(process_file(fp, cfg, model=model))
+            all_rows.extend(process_file(fp, cfg, out_dir, model=model))
     df = pd.DataFrame(all_rows)
-    df.to_csv(OUT / "spe_templates_perfile.csv", index=False)
-    print(f"\nsaved {OUT}/spe_templates_perfile.csv  ({len(df)} templates total)")
+    df.to_csv(out_dir / "spe_templates_perfile.csv", index=False)
+    print(f"\nsaved {out_dir}/spe_templates_perfile.csv  ({len(df)} templates total)")
     if len(df):
-        plot_comparison(df)
+        plot_comparison(df, out_dir)
 
 
 if __name__ == "__main__":

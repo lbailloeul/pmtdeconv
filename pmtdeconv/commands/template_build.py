@@ -1,10 +1,16 @@
 """``pmtdeconv template build`` — per-(dataset, file, channel) stacked SPE templates.
 
-Delegates to ``build_spe_templates_perfile.main``. The legacy script's
-configuration lives in its module-level ``DATASETS`` list; in this PR
-the subcommand accepts no overrides and just runs the canonical build
-across all configured datasets. Future PRs can wire ``--dataset``,
-``--max-events``, ``--spe-band`` etc. through to the legacy module.
+Delegates to ``pipeline.template_build_impl.main``. Since 2026-07-02 the
+build config comes from the ONE dataset registry (``presets/datasets.py`` +
+YAML cards) via ``template_build_impl.config_from_preset`` — so any
+``--dataset`` name (or card path) that works for ``hits`` works here too.
+Previously this module kept a hand-maintained alias map onto the impl's own
+parallel 8-entry registry and monkey-patched its module globals; new
+datasets could not be template-built without editing that legacy list.
+
+The retired legacy list's only entry without a registry equivalent was
+``MilliQan_2150`` (``data/2150``): reproduce it with
+``--dataset milliqan --data-root <...>/data/2150``.
 """
 from __future__ import annotations
 
@@ -21,8 +27,8 @@ from pmtdeconv.presets import resolve_settings
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     g = parser.add_argument_group("template build")
     g.add_argument("--all", dest="all_datasets", action="store_true",
-                   help="Iterate every dataset in the legacy DATASETS list "
-                        "(current behavior — overrides default off).")
+                   help="Iterate every dataset in the registry (also the "
+                        "behavior when --dataset is omitted).")
     g.add_argument("--no-single-peak", action="store_true",
                    help="Disable the default single-peak veto and stack every "
                         "band-selected waveform (legacy behavior). Templates "
@@ -31,6 +37,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         "by default — 2026-06-10 finding: pulse trains were "
                         "97%% of the 66727 ch2 band and inflated tau_fall "
                         "40 ns vs the true 2.8 ns.")
+    g.add_argument("--spe-band", nargs=2, type=float, metavar=("LO", "HI"),
+                   default=None,
+                   help="Override the SPE selection amplitude band (peak height "
+                        "vMax in mV, baseline-subtracted, polarity-corrected). "
+                        "The template stacks only isolated single pulses whose "
+                        "vMax falls in (LO, HI]. Defaults to the dataset's "
+                        "preset band. Requires --dataset. Use when a run's gain/"
+                        "DAQ window puts the single-PE mode outside the preset "
+                        "band (e.g. Run 66810 bipolar Range-Center-0: SPE mode "
+                        "~24 mV, so `--spe-band 10 30`, not the (50,200) default).")
     g.add_argument("--model", choices=("biexp", "biexp-overshoot"),
                    default="biexp",
                    help="SPE fit model. `biexp` (default): Gaussian-smeared "
@@ -48,9 +64,6 @@ def run(args: argparse.Namespace) -> int:
     settings, provenance = resolve_settings(args, require_data_root=False)
 
     # Bug-fix 3 (2026-05-30 scan): honor --out-dir. Default unchanged.
-    # .resolve() (2026-05-30 gallery run): the impl's main() does os.chdir()
-    # into pmtdeconv/pipeline/, so a RELATIVE --out-dir would otherwise make
-    # the impl's np.save(OUT/...) write to the wrong place (FileNotFound).
     out_dir = (Path(settings.out_dir) if settings.out_dir
                else PROJECT_ROOT / "outputs" / "spe_templates_perfile").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -58,90 +71,45 @@ def run(args: argparse.Namespace) -> int:
                           provenance=provenance, out_dir=out_dir,
                           duration_seconds=time.time() - t0):
         return 0
-    from pmtdeconv.pipeline import template_build_impl as legacy  # noqa
-    # The impl's module-level OUT path drives every file it writes;
-    # patch it so --out-dir actually takes effect.
-    _orig_out = legacy.OUT
-    legacy.OUT = out_dir
+    from pmtdeconv.pipeline import template_build_impl as impl
 
-    # Decision 11: when --dataset is supplied, filter the legacy
-    # DATASETS list down to just that one entry. The names in the
-    # legacy list use mixed conventions ("Cd109_lab", "Na22_lab",
-    # "MilliQan_1000", "LANL_806", ...) so we match case-insensitively
-    # against a few aliases.
-    selected = settings.dataset
-    if selected is not None:
-        # Bug-fix (2026-05-30): the legacy DATASETS entries are named
-        # "Cd109"/"Na22"/… (not "Cd109_lab"); the old aliases pointed at
-        # the wrong names so `template build --dataset cd109` matched
-        # nothing and aborted. Match the actual legacy names.
-        aliases = {
-            "na22":          {"Na22"},
-            "na22_3ch":      {"Na22_3ch"},
-            "cd109":         {"Cd109"},
-            "milliqan":      {"MilliQan_1000", "MilliQan_2150"},
-            "lanl_806":      {"LANL_806"},
-            "lanl_835":      {"LANL_835"},
-            "lanl_movedBar": {"LANL_movedBar"},
-        }
-        wanted = aliases.get(selected, {selected})
-        # Shallow-copy so a --data-root override below doesn't mutate the
-        # module-level DATASETS dicts.
-        kept = [dict(d) for d in legacy.DATASETS if d["name"] in wanted]
-        if not kept:
-            raise SystemExit(
-                f"--dataset {selected!r} matched none of the legacy "
-                f"DATASETS entries. Known legacy names: "
-                f"{[d['name'] for d in legacy.DATASETS]}")
-        # Honor --data-root: point the kept entries at the override dir
-        # (resolved absolute by the impl). Without this the impl uses the
-        # legacy relative path anchored at PROJECT_ROOT.
+    if settings.dataset is not None:
+        # One registry for everything: the same resolution `hits` uses
+        # (in-code seeds + YAML cards). resolve_settings already applied it,
+        # so the build config comes straight off the resolved Settings.
+        from pmtdeconv.presets.datasets import resolve_dataset_with_source
+        ds, _src, _ov = resolve_dataset_with_source(settings.dataset)
+        cfg = impl.config_from_preset(ds)
+        configs = [cfg]
+        # CLI overrides land on the ONE config dict (no global mutation).
         if settings.data_root is not None:
-            for d in kept:
-                d["dir"] = str(settings.data_root)
+            cfg["dir"] = str(settings.data_root)
             print(f"  --data-root override: {settings.data_root}")
-        # Wire --runs / --dt-ns / --branches through to the impl
-        # (2026-06-10, Runs 66727-29): without these the build sweeps every
-        # file matching the dataset glob at the legacy dt, but new-run
-        # template extraction must use only the requested runs and the
-        # run's measured sampling rate.
         if settings.runs:
-            for d in kept:
-                d["runs"] = [str(r) for r in settings.runs]
+            cfg["runs"] = [str(r) for r in settings.runs]
             print(f"  --runs filter: {settings.runs}")
         if provenance.get("dt_ns") == "cli" and settings.dt_ns not in (None, "auto"):
-            for d in kept:
-                d["dt"] = float(settings.dt_ns)
+            cfg["dt"] = float(settings.dt_ns)
             print(f"  --dt-ns override: {settings.dt_ns}")
         if provenance.get("branch_pattern") == "cli" and settings.branch_pattern:
-            for d in kept:
-                d["channels"] = list(settings.branch_pattern)
+            cfg["channels"] = list(settings.branch_pattern)
             print(f"  --branches override: {settings.branch_pattern}")
+        if settings.entry_stop:
+            cfg["max_events"] = int(settings.entry_stop)
+            print(f"  --entry-stop: max_events={settings.entry_stop}")
         if getattr(args, "no_single_peak", False):
-            for d in kept:
-                d["single_peak"] = False
+            cfg["single_peak"] = False
             print("  --no-single-peak: secondary-peak veto DISABLED")
-        # Temporarily replace the module-level DATASETS while main() runs
-        original = legacy.DATASETS
-        legacy.DATASETS = kept
-        print(f"Delegating to build_spe_templates_perfile.main() — "
-              f"filtered to {[d['name'] for d in kept]}  (model={args.model})")
-        try:
-            legacy.main(model=args.model)
-        finally:
-            legacy.DATASETS = original
-            legacy.OUT = _orig_out
+        if getattr(args, "spe_band", None) is not None:
+            lo, hi = float(args.spe_band[0]), float(args.spe_band[1])
+            cfg["spe_band"] = (lo, hi)
+            print(f"  --spe-band override: ({lo:g}, {hi:g}) mV")
     else:
-        print(f"Delegating to build_spe_templates_perfile.main() — "
-              f"all configured datasets  (model={args.model})")
-        try:
-            legacy.main(model=args.model)
-        finally:
-            legacy.OUT = _orig_out
-    # If the conditional branch above ran legacy.main() via the
-    # try/finally on filtered datasets, ensure OUT is also restored.
-    if legacy.OUT is not _orig_out:
-        legacy.OUT = _orig_out
+        configs = impl.configs_from_registry()
+
+    print(f"Delegating to template_build_impl.main() — "
+          f"{[c['name'] for c in configs]}  (model={args.model})")
+    impl.main(configs, model=args.model, out_dir=out_dir)
 
     outputs_meta = [
         {"role": "spe_templates_perfile_csv",
@@ -155,7 +123,7 @@ def run(args: argparse.Namespace) -> int:
         provenance=provenance,
         inputs=[],
         outputs=outputs_meta,
-        stats={"datasets": [d["name"] for d in legacy.DATASETS],
+        stats={"datasets": [c["name"] for c in configs],
                "model": args.model},
         out_path=manifest_path,
         duration_seconds=time.time() - t0,

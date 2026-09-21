@@ -63,6 +63,8 @@ CLI_TO_SETTINGS = {
     "stft_nperseg_ns":     "stft_nperseg_ns",
     "stft_freq_cutoff_mhz": "stft_freq_cutoff_mhz",
     "stft_amp_threshold":  "stft_amp_threshold",
+    "stft_threshold_mode": "stft_threshold_mode",
+    "stft_fixed_threshold": "stft_fixed_threshold",
     "denoise_raw":         "denoise_raw",
     "denoiser":            "denoiser",
     "cosine_cutoff_mhz":   "cosine_cutoff_mhz",
@@ -74,6 +76,15 @@ CLI_TO_SETTINGS = {
     "polarity":            "polarity",
     "allow_generic_fallback": "allow_generic_fallback",
     "veto_warn_frac":      "veto_warn_frac",
+    # 2026-07-28: linear (zero-padded) hits deconvolution toggle.
+    "fft_pad":             "fft_pad",
+    # 0–20 PE re-scope: per-branch 1-PE charge anchor override
+    # (`--spe-charge BR=VAL ...`; parsed into a dict in _apply_cli).
+    "spe_charge":          "spe_charge_pvs",
+    "pe_band":             "pe_band",
+    "in_regime_only":      "in_regime_only",
+    "veto_profile":        "veto_profile",
+    "entry_list":          "entry_list",
 }
 
 
@@ -100,6 +111,17 @@ class Settings:
     default_template_csv_na22fmt: Optional[Path] = None
     template_csv_by_channel: Optional[Dict[str, Path]] = None   # S9: per-tube
     fom:                   Optional[str] = None                 # S6: declared FoM
+    # Copied from the DatasetPreset so they reach the manifest (write_manifest
+    # serializes every Settings field). `notes` used to stop at the preset and
+    # show only in `info datasets`; `meta` is a card's free-form provenance
+    # block (tube serial, source, ELOG ref, contact). pmtdeconv never
+    # interprets either — they travel with the run so a shared output
+    # directory says which detector produced it.
+    notes:                 str = ""
+    meta:                  Optional[Dict[str, Any]] = None
+    # The card FILE this run resolved (None for an in-code seed). Recorded as
+    # a manifest input so the run names its own configuration source.
+    dataset_card_path:     Optional[Path] = None
     offline_data_dir:      Optional[Path] = None
     offline_file_glob:     Optional[str] = None
     spe_band_mv:           Tuple[float, float] = (5.0, 30.0)
@@ -108,6 +130,25 @@ class Settings:
     # is manifest/charge-scale context only (never alters the kernel).
     pmt_type:              Optional[str] = None
     hv_volts:              Optional[Dict[str, float]] = None
+    # 0–20 PE re-scope: per-branch 1-PE charge anchor in pVs ({branch: value};
+    # card key `spe_charge`, CLI `--spe-charge BR=VAL`). None = uncalibrated.
+    spe_charge_pvs:        Optional[Dict[str, float]] = None
+    # 0–20 PE re-scope: the deconvolution applicability window in nPE (card
+    # key `pe_band`). `in_regime := pe_band[0] <= npe_raw <= pe_band[1]`.
+    pe_band:               Tuple[float, float] = (0.0, 20.0)
+    # 0–20 PE re-scope: apply the regime cut (default OFF: flag-only,
+    # include-everything — mirroring the saturated-flag convention).
+    in_regime_only:        bool = False
+    # Explicitly-named veto profile for `hits` (None = legacy per-denoiser
+    # selection). A file under <data_root>/calibrations/veto_profiles/ shadows
+    # the builtins for EXPLICIT names only (default paths never silently
+    # shadow — byte safety). Explicit selection also enables all allow_*
+    # behavior switches (no silently-ignored flags).
+    veto_profile:          Optional[str] = None
+    # Entry filter (`--entry-list`): a CSV with an `entry` column (e.g.
+    # `select multihit`'s event_list.csv) or one index per line — process
+    # only those entries. None = all entries.
+    entry_list:            Optional[Path] = None
 
     # Common CLI flags
     runs:                  Optional[List[int]] = None
@@ -115,7 +156,7 @@ class Settings:
     out_dir:               Optional[Path] = None
     out_suffix:            str = ""
     manifest_path:         Optional[Path] = None
-    hash_inputs:           bool = False
+    hash_inputs:           bool = True     # --no-hash-inputs to skip
     dry_run:               bool = False
     log_level:             str = "info"
 
@@ -135,12 +176,27 @@ class Settings:
     stft_nperseg_ns:       float = 20.0
     stft_freq_cutoff_mhz:  float = 175.0
     stft_amp_threshold:    float = 10.0
+    # Tang-2024 paper-STFT variant (2026-07-28; value renamed "absolute" ->
+    # "fixed" 2026-09-18): time-COLUMN selection — keep whole STFT columns
+    # whose band-limited amplitude clears a FIXED threshold (their 0.02 A.U.
+    # below 50 MHz) — instead of the element-wise global-median ×
+    # amp_threshold mask. The threshold is the same for every waveform,
+    # hence "fixed" (vs "median", which adapts). Defaults reproduce our
+    # historical behavior byte-for-byte.
+    stft_threshold_mode:   str = "median"     # median | fixed
+    stft_fixed_threshold:  Optional[float] = None
     denoise_raw:           bool = False
+    # 2026-07-28: linear (zero-padded to 2N) hits deconvolution. Default ON —
+    # bare FFT division is circular (late tails wrap into early time).
+    # `--no-fft-pad` reproduces the historical circular bytes.
+    fft_pad:               bool = True
     snr_peak_min:          float = 5.0
     peak_distance_ns:      float = 5.0
     no_vetoes:             bool = False
     # `auto`: chronological if vetoes are on, tallest-first when --no-vetoes
-    # (decision 8). Override with `chrono` or `tallest` to decouple.
+    # (decision 8). Override with `chrono` / `tallest` / `first` to decouple
+    # (`first`: first peak >=15% of the tallest wins peak_id=1 — skips deconv
+    # ringing side-lobes; pair with the t_half column for half-time timewalk).
     peak_order:            str = "auto"
     # Step 3: opt-in to the generic MilliQan fallback template when no
     # per-channel CSV is configured and the PMT type is uncatalogued
@@ -240,7 +296,55 @@ def _apply_cli(settings: Settings, provenance: Dict[str, str],
                 except ValueError as exc:
                     raise SystemExit(f"--dt-ns must be a float or 'auto', "
                                      f"got {value!r}") from exc
+        # Special case: --spe-charge BR=VAL [BR=VAL ...] -> {branch: pVs}
+        if settings_key == "spe_charge_pvs" and isinstance(value, list):
+            parsed: Dict[str, float] = {}
+            for item in value:
+                if "=" not in str(item):
+                    raise SystemExit(
+                        f"--spe-charge expects BRANCH=VALUE, got {item!r}")
+                br, _, v = str(item).partition("=")
+                try:
+                    parsed[br] = float(v)
+                except ValueError as exc:
+                    raise SystemExit(
+                        f"--spe-charge {item!r}: value must be a float "
+                        f"(1-PE charge in pVs)") from exc
+            value = parsed
+        # Special case: --pe-band LO HI arrives as a 2-list
+        if settings_key == "pe_band" and isinstance(value, list):
+            if len(value) != 2 or not float(value[0]) < float(value[1]):
+                raise SystemExit(f"--pe-band expects LO HI with LO < HI, "
+                                 f"got {value!r}")
+            value = (float(value[0]), float(value[1]))
         _set(settings, provenance, settings_key, value, "cli")
+
+
+def _reject_preset_as_dataset(name: str) -> None:
+    """``--dataset`` names a DETECTOR; ``--preset`` names a RECIPE.
+
+    Until 2026-09-18 ``--dataset`` also accepted a config-preset name, so
+    ``--dataset P``, ``--preset P`` and ``--dataset <base> --preset P`` were
+    three spellings of one run. Worse, ``--dataset P1 --preset P2`` silently
+    stacked both presets' overrides while recording only P2's name in the
+    manifest and the output directory — a run that claimed one recipe and
+    applied two. Rejecting a preset here makes that unrepresentable.
+
+    A name that is also a real dataset (or a card path) still wins as a
+    dataset; only a name that is *exclusively* a preset is refused.
+    """
+    from pmtdeconv.presets.cards import is_card_reference
+    if name not in CONFIGS:
+        return
+    if name in DATASETS or is_card_reference(name):
+        return
+    raise SystemExit(
+        f"\n`--dataset {name}` names a config preset, not a detector.\n"
+        f"  Use instead:  --preset {name}\n"
+        f"  To apply that recipe to a different detector, combine them:\n"
+        f"                --dataset <detector> --preset {name}\n"
+        f"  `--dataset` takes a dataset name ({', '.join(DATASETS)}) "
+        f"or a path to a YAML card.\n")
 
 
 def resolve_settings(args: argparse.Namespace,
@@ -266,20 +370,18 @@ def resolve_settings(args: argparse.Namespace,
 
     dataset_name = getattr(args, "dataset", None)
     if dataset_name is not None:
-        if dataset_name in CONFIGS:
-            # Collapse: --dataset may name a config preset (so --preset X is now
-            # equivalent to --dataset X). Apply its base dataset + overrides.
-            cfg = get_config(dataset_name)
-            ds, src, _ov = resolve_dataset_with_source(cfg.base_dataset)
-            _apply_dataset(settings, provenance, ds, src)
-            _apply_config(settings, provenance, cfg)
-        else:
-            ds, src, overrides = resolve_dataset_with_source(dataset_name)
-            _apply_dataset(settings, provenance, ds, src)
-            # A card's `settings:` block subsumes a config preset's overrides.
-            if overrides:
-                _apply_overrides(settings, provenance, overrides, "card",
-                                 where=f"card {dataset_name!r}")
+        _reject_preset_as_dataset(dataset_name)
+        ds, src, overrides = resolve_dataset_with_source(dataset_name)
+        _apply_dataset(settings, provenance, ds, src)
+        # Record the card FILE whenever one was used — a user card or the
+        # shipped default — so the manifest names (and can hash) it.
+        from pmtdeconv.presets.datasets import card_path_for
+        _set(settings, provenance, "dataset_card_path",
+             card_path_for(dataset_name), src)
+        # A card's `settings:` block subsumes a config preset's overrides.
+        if overrides:
+            _apply_overrides(settings, provenance, overrides, "card",
+                             where=f"card {dataset_name!r}")
 
     preset_name = getattr(args, "preset", None)
     if preset_name is not None:

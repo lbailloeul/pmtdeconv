@@ -11,7 +11,7 @@ Examples:
   python deconvolution/analyze_deconv.py --preset na22 --plot charge
 
   # Arbitrary CSV, only the 2D charge-vs-time plot
-  python deconvolution/analyze_deconv.py --csv outputs/my_dir/deconv_pulse.csv --plot charge_vs_time
+  python deconvolution/analyze_deconv.py --csv outputs/my_dir/hits.csv --plot charge_vs_time
 
   # Two specific plots on Na22
   python deconvolution/analyze_deconv.py --preset na22 --plot charge charge_vs_time
@@ -146,7 +146,7 @@ def plot_charge(csv_path, df, label, q_range, bins_q=100, output_dir=None):
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm); sm.set_array([])
     fig.colorbar(sm, ax=ax).set_label("Mean Peak Height [a.u.]")
     ax.set_yscale("log")
-    ax.set_xlabel("Reconstructed Charge [a.u.]")
+    ax.set_xlabel("Reconstructed Charge [pVs]")
     ax.set_ylabel("Counts")
     minimal_axes(ax)
 
@@ -189,7 +189,7 @@ def plot_charge_tcut(csv_path, df, label, q_range, t_lo_cut, t_hi_cut,
     fig.colorbar(sm, ax=ax).set_label("Mean Peak Height [a.u.]")
 
     ax.set_yscale("log")
-    ax.set_xlabel("Reconstructed Charge [a.u.]")
+    ax.set_xlabel("Reconstructed Charge [pVs]")
     ax.set_ylabel("Counts")
     minimal_axes(ax)
 
@@ -217,7 +217,7 @@ def plot_charge_vs_height(csv_path, df, label, q_range, bins_q=100, bins_h=80,
                    cmap=root_viridis(), norm=LogNorm(vmin=1), cmin=1)
     fig.colorbar(h2[3], ax=ax).set_label("Counts")
 
-    ax.set_xlabel("Reconstructed Charge [a.u.]")
+    ax.set_xlabel("Reconstructed Charge [pVs]")
     ax.set_ylabel("Peak Height [a.u.]")
     minimal_axes(ax)
 
@@ -244,7 +244,7 @@ def plot_charge_vs_time(csv_path, df, label, q_range, bins_q=50, bins_t=120,
     fig.colorbar(h2[3], ax=ax).set_label("Counts")
 
     ax.set_xlabel("Hit Time [ns]")
-    ax.set_ylabel("Reconstructed Charge [a.u.]")
+    ax.set_ylabel("Reconstructed Charge [pVs]")
     minimal_axes(ax)
 
     fig.tight_layout()
@@ -367,8 +367,8 @@ def plot_ch1_vs_ch2(csv_path, df_full, label, q_range, t_cut=None,
             x_hi = q_range[1]
         else:
             x_hi = float(np.percentile(np.concatenate([xA, xB]), 99.5))
-        xlabel = f"Q ch{chA} [a.u.]"
-        ylabel = f"Q ch{chB} [a.u.]"
+        xlabel = f"Q ch{chA} [pVs]"
+        ylabel = f"Q ch{chB} [pVs]"
 
     edges = np.linspace(x_lo, x_hi, int(bins_2d) + 1)
 

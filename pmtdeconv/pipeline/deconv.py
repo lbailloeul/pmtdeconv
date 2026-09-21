@@ -1,4 +1,4 @@
-"""FFT deconvolution helpers — wraps utils.deconvolve_hits.
+"""FFT deconvolution helpers — wraps :func:`pmtdeconv.core.dsp.deconvolve_hits`.
 
 Provides a small kernel-cache so a long run over thousands of waveforms
 doesn't rebuild ``FFT(SPE) / cosine_filter`` per event when N+dt+kernel
@@ -6,17 +6,13 @@ are constant.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict
 
 import numpy as np
 
-from pmtdeconv.utils import (                                      # noqa: E402
-    build_spe_template,
-    cosine_lowpass_filter,
-    deconvolve_hits,
-)
+from pmtdeconv.core.kernels import build_spe_template
+from pmtdeconv.core.filters import cosine_lowpass_filter
+from pmtdeconv.core.dsp import deconvolve_hits
 
 
 def build_kernel(template_params: Dict[str, float],

@@ -17,7 +17,7 @@ from pmtdeconv.utils import (
     deconvolve_hits, stft_denoise,
     baseline_noise_bestwindow, sliding_local_mean,
     find_integration_windows, _walk_to_trough_left, _walk_to_trough_right,
-    apply_peak_vetoes,
+    cfd50_time, apply_peak_vetoes,
 )
 
 # ═══════════════════════════════════════════════════════════════════
@@ -309,6 +309,89 @@ class TestIntegrationWindows:
         _, hi1 = windows[0]
         lo2, _ = windows[1]
         assert hi1 <= lo2, "Windows should not overlap for well-separated peaks"
+
+    @staticmethod
+    def _two_triangles():
+        """Small early pulse (area 500) + tall late pulse (area 1000)."""
+        u = np.zeros(400, dtype=DTYPE)
+        for center, height in ((100, 50.0), (200, 100.0)):
+            for i in range(-10, 11):
+                u[center + i] = max(u[center + i], height * (1 - abs(i) / 10))
+        return u
+
+    def test_windows_order_independent(self):
+        """Windows must be identical whichever order the peaks arrive in.
+
+        Regression for the 2026-07-01 finding: `--peak-order tallest` (the
+        --no-vetoes default) passed height-ordered peaks, the chronological
+        neighbor-capping walk saw negative neighbor distances, and every
+        multi-peak event got degenerate (empty) windows — i.e. zero charge.
+        """
+        u = self._two_triangles()
+        w_chrono = find_integration_windows(u, np.array([100, 200]), pad_bins=36)
+        w_tallest = find_integration_windows(u, np.array([200, 100]), pad_bins=36)
+        # Same windows, parallel to the input order.
+        assert w_tallest == [w_chrono[1], w_chrono[0]]
+        for lo, hi in w_tallest:
+            assert hi > lo, "window must be non-degenerate"
+
+    def test_multipeak_charge_preserved_any_order(self):
+        """Integrated charge per pulse must not depend on peak ordering."""
+        u = self._two_triangles()
+        charges_chrono = [float(u[lo:hi].sum()) for lo, hi in
+                          find_integration_windows(u, np.array([100, 200]), 36)]
+        charges_tallest = [float(u[lo:hi].sum()) for lo, hi in
+                           find_integration_windows(u, np.array([200, 100]), 36)]
+        assert charges_chrono == [charges_tallest[1], charges_tallest[0]]
+        assert min(charges_chrono) > 0, "every pulse must integrate real charge"
+        # Triangle areas: base 20 bins, heights 50 / 100.
+        assert abs(charges_chrono[0] - 500.0) < 1.0
+        assert abs(charges_chrono[1] - 1000.0) < 1.0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: CFD-50 half-time estimator (the t_half column)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestCfd50Time:
+    def test_linear_edge_subsample_crossing(self):
+        """Linear 0→100 rise over 10 samples: 50% crossing halfway up."""
+        u = np.zeros(300, dtype=DTYPE)
+        u[90:101] = np.linspace(0.0, 100.0, 11)   # apex at sample 100
+        u[101:111] = np.linspace(90.0, 0.0, 10)
+        t = np.arange(300, dtype=DTYPE) * 2.0     # dt = 2 ns
+        assert abs(cfd50_time(u, 100, t) - 190.0) < 1e-9  # sample 95 → 190 ns
+
+    def test_between_samples_interpolation(self):
+        """Crossing between grid points is linearly interpolated."""
+        u = np.zeros(50, dtype=DTYPE)
+        u[10] = 20.0   # 50% level = 30 lies between samples 10 (20) and 11 (40)
+        u[11] = 40.0
+        u[12] = 60.0   # apex
+        t = np.arange(50, dtype=DTYPE) * 1.0
+        assert abs(cfd50_time(u, 12, t) - 10.5) < 1e-9
+
+    def test_half_time_precedes_apex(self):
+        """t_half sits on the rising edge, strictly before the apex time."""
+        u = np.zeros(200, dtype=DTYPE)
+        u[80:101] = np.linspace(0.0, 10.0, 21)
+        u[101:121] = np.linspace(9.5, 0.0, 20)
+        t = np.arange(200, dtype=DTYPE) * 0.5
+        assert cfd50_time(u, 100, t) < t[100]
+
+    def test_nonpositive_peak_falls_back_to_apex(self):
+        """A non-positive 'peak' has no half level; falls back to t[pk]."""
+        u = np.zeros(50, dtype=DTYPE) - 1.0
+        t = np.arange(50, dtype=DTYPE) * 1.25
+        assert cfd50_time(u, 25, t) == t[25]
+
+    def test_peak_at_start_of_trace(self):
+        """Apex at sample 0 must not walk out of bounds."""
+        u = np.zeros(50, dtype=DTYPE)
+        u[0] = 5.0
+        t = np.arange(50, dtype=DTYPE) * 1.0
+        out = cfd50_time(u, 0, t)
+        assert np.isfinite(out) and out == t[0]
 
 
 # ═══════════════════════════════════════════════════════════════════

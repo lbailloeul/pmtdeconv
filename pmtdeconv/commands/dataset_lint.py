@@ -22,11 +22,14 @@ def _settings_fields() -> set:
 
 
 def run(args: argparse.Namespace) -> int:
-    from pmtdeconv.presets.cards import load_card, read_card_settings
+    from pmtdeconv.presets.cards import (
+        _read_card_yaml, load_card, read_card_settings,
+    )
 
     try:
         ds = load_card(args.card)
         settings = read_card_settings(args.card)
+        raw, _card_dir = _read_card_yaml(args.card)
     except Exception as exc:                       # noqa: BLE001 - report cleanly
         print(f"FAIL: card did not load: {exc}")
         return 1
@@ -57,6 +60,18 @@ def run(args: argparse.Namespace) -> int:
     if ds.default_template_csv and not Path(ds.default_template_csv).exists():
         warnings.append(f"template {ds.default_template_csv} does not exist")
 
+    # Unknown TOP-LEVEL keys: a warning, not an error — a card written for a
+    # newer pmtdeconv must still lint on an older one. But it is reported,
+    # because a silently-ignored `polarty: -1` is a setting the expert believes
+    # is in effect and is not.
+    from pmtdeconv.presets.cards import suggest_card_key, unknown_card_keys
+    for key in unknown_card_keys(raw):
+        hint = suggest_card_key(key)
+        warnings.append(
+            f"unknown key {key!r} is ignored"
+            + (f" — did you mean {hint!r}?" if hint
+               else " — free-form provenance belongs under `meta:`"))
+
     valid = _settings_fields()
     for key in settings:
         if key not in valid:
@@ -67,6 +82,18 @@ def run(args: argparse.Namespace) -> int:
         if ds.fom not in FOMS:
             errors.append(
                 f"fom {ds.fom!r} is not a known FoM ({', '.join(FOMS)})")
+
+    if ds.spe_charge_pvs is not None:
+        for br, v in ds.spe_charge_pvs.items():
+            if not (isinstance(v, (int, float)) and 0 < float(v) < 1e7):
+                errors.append(
+                    f"spe_charge[{br}] {v!r} must be a positive 1-PE charge "
+                    f"in pVs")
+
+    if not (len(ds.pe_band) == 2 and float(ds.pe_band[0]) < float(ds.pe_band[1])
+            and float(ds.pe_band[0]) >= 0):
+        errors.append(f"pe_band {ds.pe_band!r} must be [lo, hi] with "
+                      f"0 <= lo < hi (nPE)")
 
     if ds.template_csv_by_channel:
         for br, p in ds.template_csv_by_channel.items():

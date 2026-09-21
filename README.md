@@ -15,6 +15,35 @@ na22_3ch, cd109, milliqan, lanl_806, lanl_835, lanl_movedBar.
 around output granularity (`hits` vs `area`) plus supporting template,
 area-source, plotting, timewalk, info, and tune commands.
 
+## Applicability domain — what this toolkit is valid for
+
+SPE-template deconvolution rests on the linear model **m(t) = SPE ⊛ u(t)**,
+which holds only while individual photoelectrons (PEs) and small clusters are
+resolvable — the **0–20 PE regime** (Tang et al. 2411.07620; reproduced
+in-repo by `pmtdeconv sim tang2024`). Above it, pulses merge into a continuum
+and PMT/digitizer nonlinearity breaks the model; in our detectors the 20 PE
+boundary roughly coincides with the 950 mV digitizer rail (SPE ≈ 15–26 mV
+per tube). The toolkit therefore runs **two tracks**:
+
+- **Track 1 (primary): 0–20 PE deconvolved charge + multi-hit separation.**
+  Deconvolved charge is quantitatively meaningful here — the proven
+  observable is **1-PE charge quantization σ/μ** (deconv beats raw by
+  +33%/+51% on Cd109), *not* photopeak resolution. Workflow: `gain calibrate`
+  (fit the 1-PE peak → per-branch `spe_charge` anchor) → `hits` (every row
+  carries `npe_raw`/`in_regime`/`npe`; `--in-regime-only` applies the cut) →
+  `select multihit` (0–20 PE multi-hit bunches) → `benchmark denoisers`
+  (STFT-vs-wavelet under identical conditions) / `plot deconv-value`.
+- **Track 2 (supported): timing through saturation.** Edge timing survives
+  clipping that destroys charge (validated: `t_half` MAD-σ 3× tighter than
+  `t_peak` under saturation), so `timewalk {run, gif}` and the `t_half`
+  column remain first-class on saturated data — but **deconvolved charge is
+  out of domain there** and must not be interpreted (e.g. Na22/Ba133
+  photopeaks at 1.45 kV are far beyond 20 PE).
+
+Every waveform is *flagged*, never silently dropped: `saturated` and
+`in_regime` are include-by-default columns with one visible toggle each
+(`plot energy --exclude-saturated`, `hits --in-regime-only`).
+
 ## Key concepts
 
 **Why deconvolve at all?** Standard analysis reads timing off the sloping edge
@@ -39,34 +68,45 @@ time-walk and separates hits that arrive only nanoseconds apart.
 bailloeulScripts/
 ├── pmtdeconv/                  # Self-contained CLI package. Everything
 │   │                             needed to run the CLI lives in here.
-│   ├── cli.py, __main__.py     # Argparse tree + dispatcher
-│   ├── utils.py                # Shared math (filters, baseline, vetoes,
-│   │                             STFT + wavelet denoising)
-│   ├── commands/               # One module per leaf subcommand (~26 modules)
-│   ├── pipeline/               # process_{area,hits}, deconv, denoise,
-│   │                             detector, template_{build,aggregate}_impl,
+│   ├── cli.py, __main__.py     # Argparse tree + two-stage dispatcher
+│   ├── core/                   # THE MATH — single source of truth:
+│   │                             kernels.py (SPE templates), filters.py
+│   │                             (cosine low-pass), dsp.py (FFT deconv,
+│   │                             STFT/wavelet denoise, baseline),
+│   │                             peaks.py (windows, FWHM, CFD-50, vetoes)
+│   ├── utils.py                # Compatibility shim re-exporting core/ for
+│   │                             the local gitignored legacy/ scripts.
+│   │                             Nothing in pmtdeconv/ imports it.
+│   ├── commands/               # One module per leaf subcommand (32 modules)
+│   ├── pipeline/               # process_{area,hits}, pipeline (the shared
+│   │                             per-event engine), detector, deconv,
+│   │                             denoise, event_source, gain, template*,
 │   │                             scoring, diagnostic sink, timewalk scan
 │   ├── plotting/               # scatter2d, marginals, energy, analyze,
-│   │                             timewalk_gif_impl, sweep curves, style
-│   ├── presets/                # datasets.py + configs.py + tuned_configs.py
-│   └── io/                     # manifest, schemas, root loaders,
-│                                 template + truth CSV I/O
+│   │                             deconv_value, timewalk_gif_impl, style
+│   ├── presets/                # datasets.py + cards.py + configs.py +
+│   │                             tuned_configs.py + veto/template/gain
+│   │                             catalogs
+│   ├── sim/                    # Tang-2024 MC generator + validation
+│   └── io/                     # manifest, schemas, root loaders, banner,
+│                                 template + truth CSV I/O, output paths
 │
-├── tests/                      # Focused unit tests + byte-id golden fixtures
-│   ├── fixtures/               # synth ROOT + truth CSVs + golden CSVs
-│   ├── test_pmtdeconv_cli.py
-│   ├── test_golden_fixture.py
-│   ├── test_tune_cli.py
-│   ├── test_truth_schema.py
-│   └── test_vetoes.py
+├── tests/                      # 33 test modules; 280 tests
+│   ├── fixtures/               # synth-ROOT builders, regime generators,
+│   │                             golden_spec.py + bless_goldens.py
+│   ├── test_pmtdeconv_cli.py   # CLI wiring + preset resolution
+│   ├── test_golden_fixture.py  # 12 byte-identical goldens
+│   ├── test_flag_plumbing.py   # meta-test: no flag can be silently dropped
+│   └── …                       # math, vetoes, gain, PE gate, tune, sim
 │
 ├── outputs/                    # CLI outputs (gitignored)
+├── pyproject.toml
 ├── README.md
 └── .gitignore
 ```
 
-The top-level has just **3 visible entries** (`pmtdeconv/`, `tests/`,
-`README.md`) plus the gitignored `outputs/`. `pmtdeconv/` is
+The tracked tree is just **four entries** (`pmtdeconv/`, `tests/`,
+`README.md`, `pyproject.toml`) plus the gitignored `outputs/`. `pmtdeconv/` is
 **self-contained** — it imports nothing from sibling directories, only from
 within its own tree and from the scientific Python stack (numpy, scipy, pandas,
 matplotlib, uproot, awkward, PyWavelets), which `pip install -e .` pulls in
@@ -108,24 +148,61 @@ the editable install above.
 ### Running the tests
 
 ```bash
-pip install -e ".[dev]"            # once, for pytest
+pip install -e ".[dev]"                      # once, for pytest
+python tests/fixtures/bless_goldens.py       # once, on a fresh checkout
 python -m pytest tests/ -q
 ```
 
-The byte-identical **golden** tests and the **polarity** tests need synthetic
-ROOT fixtures that are *not* committed (they are regenerated, not stored). Build
-them once — no real data required:
+Neither the synthetic ROOT fixtures nor the golden CSVs are committed — both
+are gitignored, and no real data is needed for either. The ROOT files are large
+and regenerable from fixed RNG seeds; the golden *bytes* depend on the local
+numpy/scipy build, so a shared reference set would fail on other machines for
+reasons unrelated to the code. `bless_goldens.py` builds any missing ROOT
+fixture and regenerates all 12 goldens in one step, so each checkout owns its
+reference set and byte-identity then guards refactors within it.
+
+Skip the bless step and the ROOT-dependent tests **skip** (each prints what to
+run); the math, CLI-wiring, and tune smoke tests still pass with no fixtures at
+all. Every regeneration recipe lives as data in `tests/fixtures/golden_spec.py`,
+and `test_golden_spec_matches_tests` asserts it covers exactly the goldens the
+tests compare against — so the instructions cannot drift from the suite.
+
+### Getting the data
+
+The ROOT files are **not** in this repository — they are far too large, and
+they are not yours to redistribute. They live in the group's internal share:
+
+> **TODO (Leo):** internal location + access instructions go here.
+> e.g. `smb://…` / Globus endpoint / `rsync -av <host>:<path> ~/pmt-data/`
+
+Download once, then point `pmtdeconv` at wherever you put it:
 
 ```bash
-python tests/fixtures/make_synth_root.py          # flat waveforms
-python tests/fixtures/make_synth_object_root.py    # LANL object format
-python tests/fixtures/make_synth_drs_root.py       # DRSprocessing area tree
-python tests/fixtures/make_synth_offline_root.py   # LANL offline pulse list
+export PMTDECONV_DATA_ROOT=~/pmt-data      # add to your ~/.zshrc or ~/.bashrc
+python -m pmtdeconv info datasets          # confirms the resolved paths exist
 ```
 
-Without them those tests **skip** (each prints which script to run); the rest of
-the suite still passes. No fixture or external data is needed for the math,
-CLI-wiring, or tune smoke tests.
+`info datasets` prints the path each dataset resolved to, so you can check the
+layout before a multi-minute run. A run whose file is missing stops with an
+error listing every path it searched.
+
+**Verifying you have the same bytes.** Analyses are only comparable if everyone
+processed identical inputs. The share carries a `checksums.txt`; verify after
+downloading:
+
+```bash
+cd ~/pmt-data && shasum -a 256 -c checksums.txt
+```
+
+Every run records the SHA256 of every input — card, template, data — in the
+manifest (on by default; `--no-hash-inputs` to skip). Two people can compare `manifest.json` and prove they ran the same
+data through the same settings — or find exactly where they diverged.
+
+
+**Your own detector doesn't need any of this.** Point `--data-root` at your own
+directory and describe it with a card (see *Onboarding a new detector* below) —
+you do not need the group's Na22/Cd109 runs to use the toolkit, and the bundled
+SPE templates describe one specific tube, so build your own.
 
 ### Pointing at your data
 
@@ -151,12 +228,48 @@ exact path:
   directly under the data root or one level down in a subdirectory.
 - DRSprocessing area files (`raw-area drs`): `<root>/processed/Run<N>.root`,
   `<root>/Run<N>.root`, the same one level down, or any `*Run<N>*.root` match.
-- You can always pin an exact file with `--root` / `--area-root` (it wins over
-  the search).
+- You can always pin an exact file with `--file` (or `run --area-file`); it wins
+  over the search. `--file` names one file, `--data-root` a directory to search.
+
+**SPE templates are never invented.** A template CSV that is configured but
+missing — a typo'd `--template`, a moved file — is a **hard error**, not a
+silent substitution:
+
+```
+SPE template not found: /path/spe.csv
+  (resolved from --template)
+
+Deconvolution divides by the measured single-photoelectron response.
+pmtdeconv will not silently substitute a generic kernel: the charges would
+look plausible and be wrong.
+```
+
+Pass `--allow-generic-fallback` to accept the built-in generic kernel anyway
+(timing stays usable; **charges are not calibrated**) — the manifest then
+records `source: generic`, never the CSV that was not read. The `na22` and
+`cd109` defaults ship inside the package at
+`pmtdeconv/data/templates/`, so a fresh clone runs them without building a
+template first; build your own per-tube template for any other detector.
+
+**Describing an unregistered file.** A dataset preset or card normally supplies
+the file's physical properties, but every one of them is also a flag, so you can
+run against an ad-hoc ROOT file with no card at all:
+
+```bash
+python -m pmtdeconv hits --data-root /path/to/dir --runs 0 \
+    --tree waveforms --branches d0_ch1 --dt-ns 0.5 --polarity -1 \
+    --allow-generic-fallback
+```
+
+`--polarity -1` flips negative-going pulses (applied exactly once, in the event
+source). Without it, negative-going data reconstructs **nothing** — every
+waveform fails the `no_trigger` gate. `--allow-generic-fallback` substitutes a
+built-in generic SPE shape when no template is configured: fine for exploring
+filter settings, not for absolute charge.
 
 If a requested run's file is found nowhere, the command **stops with an error**
 that lists every path it searched and the three ways to fix it (`--data-root`,
-`PMTDECONV_DATA_ROOT`, `--root`/`--area-root`) — instead of silently producing
+`PMTDECONV_DATA_ROOT`, `--file`/`--area-file`) — instead of silently producing
 empty output. The `run` recipes forward `--data-root` to every step, so a single
 `--data-root` (or `PMTDECONV_DATA_ROOT`) covers the whole workflow and a missing
 input fails fast at the step that needs it.
@@ -209,11 +322,11 @@ offline) and the tune / diagnostic features.
 
 The deconvolution pipeline follows this sequence:
 
-1. **Baseline estimation** — finds the quiet pre-pulse level and noise floor so downstream metrics are measured from true zero. *(adaptive sliding window, MAD-based noise, log-σ acceptance; `utils.baseline_noise_bestwindow`)*
+1. **Baseline estimation** — finds the quiet pre-pulse level and noise floor so downstream metrics are measured from true zero. *(adaptive sliding window, MAD-based noise, log-σ acceptance; `core.dsp.baseline_noise_bestwindow`)*
 2. **FFT deconvolution** — reverses the PMT's time-smearing, turning broad pulses into sharp spikes. A cosine low-pass filter suppresses high-frequency electronic fuzz. *(`u_rec = IFFT(FFT(y) · filt / FFT(SPE))`)*
 3. **Denoising** — deconvolution mathematically amplifies high-frequency noise, which is mitigated via:
-   - **STFT** — time–frequency masking (`utils.stft_denoise`)
-   - **Wavelet** — frequency-band separation and thresholding (stationary SWT + MAD; `utils.wavelet_denoise`)
+   - **STFT** — time–frequency masking (`core.dsp.stft_denoise`)
+   - **Wavelet** — frequency-band separation and thresholding (stationary SWT + MAD; `core.dsp.wavelet_denoise`)
 4. **Peak finding** — locates sharpened hits above an SNR threshold (`scipy.signal.find_peaks`). *(peak-finding scripts only)*
 5. **Vetoes** — drop obviously-bad reconstructions: saturation, no-trigger, out-of-time (peak outside the signal window), post-saturation shift, afterpulse, charge purity *(peak-finding scripts only)*
 6. **Charge integration** — sum the area under each hit: trough-walked window per peak (peak-finding) or fixed window (waveform summary)
@@ -266,8 +379,12 @@ LANL/data/Na22_lab/
 `pmtdeconv` is a single CLI with git-style subcommands; each subcommand calls
 the canonical `pmtdeconv/pipeline/` functions. Every command drops a
 `manifest.json` recording the resolved settings, provenance, inputs/outputs,
-git SHA, and library versions. Byte-identical regression is guarded by
-deterministic synthetic-ROOT fixtures (3 flat + 3 object + 2 offline = 8 goldens).
+git SHA, and library versions, plus a `run.log` transcript of everything the
+run printed (resolved paths, template lines, warnings, veto rates). Send
+someone an output directory and it describes itself: `manifest.json` for what
+was configured, `run.log` for what it said. Byte-identical regression is guarded by
+deterministic synthetic-ROOT fixtures (6 flat + 3 object + 1 DRS + 2 offline
+= 12 goldens, blessed per checkout — see [Tests](#tests)).
 
 ### Subcommand tree
 
@@ -280,14 +397,26 @@ pmtdeconv
 ├── area                                       whole-waveform deconvolution summary
 ├── raw-area {mqana, drs, offline}              raw-waveform area sources
 ├── validate                                   comparative FoM report (deconv vs raw vs DRS)
-├── timewalk {run, gif}                         Δt scan + animation
-├── plot     {marginals, energy, analyze}       diagnostic plots
-├── info     {datasets, presets, template, offline-file, artifacts}
-├── config   {show, resolve}                     configuration inspection
-├── results  {list, show, path}                  output discovery
-├── tune     {cosine, wavelet, stft, denoiser, fom}  sweeps (synthetic truth + real-data fom)
+├── gain     {calibrate}                        fit the 1-PE charge peak → spe_charge (PE anchor)
+├── select   {multihit}                         0–20 PE multi-hit bunches → event_list.csv
+├── sim      {tang2024}                         Tang 2411.07620 MC (0–20 PE mix + two-hit scan)
+├── benchmark {denoisers}                       STFT-vs-wavelet verdict (real pipeline, truth metrics)
+├── timewalk {run, gif}                         Δt scan + animation      [track 2: timing-valid through saturation]
+├── plot     {marginals, energy, analyze, deconv-value}  diagnostic + deliverable plots
+├── info     {datasets, template, offline-file}  inspect a detector or a file
+├── config   {show, resolve}                     settings (`show` with no name lists presets)
+├── results  {list, show, path, index}           outputs (`index` maintains artifact_index.json)
+├── tune     {cosine, wavelet, stft, fom}        parameter sweeps
 └── vetoes   {calibrate}                         data-driven veto profile
 ```
+
+Key flags of the 0–20 PE re-scope (2026-07): `--spe-charge BR=PVS` /
+card `spe_charge:` (the PE anchor), `--pe-band LO HI` (default 0 20),
+`--in-regime-only`, `--veto-profile NAME` (identical thresholds on any
+denoiser — builtins `wavelet_hits`, `stft_hits`, `benchmark_hits`; file-backed
+profiles shadow for explicit names), `--entry-list CSV` (re-process selected
+bunches), `--no-fft-pad` (reproduce pre-2026-07-28 circular-deconvolution
+bytes).
 
 **`--dataset` takes a registry name OR a path to a YAML card** (or a directory
 with `dataset.yaml`). A new detector is onboarded with a card — no Python edit —
@@ -325,7 +454,9 @@ sweep on **real** data against your card's declared figure of merit — see belo
 | ch1-vs-ch2 area heatmap + 1D marginals | `plot marginals` |
 | four-method energy spectra (raw / FFT / STFT / wavelet) | `plot energy` |
 | charge/time/height diagnostic plots from a pulse CSV | `plot analyze` |
-| inspect a registry, file, or output index | `info {datasets, presets, template, offline-file, artifacts}` |
+| inspect a detector, template, or data file | `info {datasets, template, offline-file}` |
+| list every named preset / show one | `config show` / `config show <name>` |
+| find prior outputs / maintain the index | `results list` / `results index` |
 | inspect resolved settings | `config show`, `config resolve` |
 | find a previous output | `results list`, `results show`, `results path` |
 | **compare deconv vs raw vs DRS on my FoM** | `validate` (per-channel σ/μ table; report, not a gate) |
@@ -342,10 +473,19 @@ sweep on **real** data against your card's declared figure of merit — see belo
 dataset (seed or CARD)  <  config overrides  <  explicit CLI flag
 ```
 
-`--dataset` accepts a **registry name**, a **config-preset name** (so
-`--dataset na22-timewalk` ≡ `--preset na22-timewalk`), or a **card path/dir**.
-A card can carry analysis overrides in a `settings:` block, so a single card
-expresses everything a dataset + config preset used to. Every run prints a
+The two flags name two different things and are not interchangeable:
+**`--dataset` is the detector** (a registry name or a **card path/dir**), and
+**`--preset` is the recipe** (analysis overrides). Passing a preset name to
+`--dataset` is an error that points at `--preset`. Combine them to run one
+detector's recipe on another detector:
+
+```bash
+python -m pmtdeconv hits --dataset lanl_806 --preset na22-timewalk
+```
+
+`--preset X` on its own falls back to X's own base dataset. A card can carry
+analysis overrides in a `settings:` block, so a single card expresses
+everything a dataset + config preset used to. Every run prints a
 **provenance banner** (and writes it to the manifest) showing each resolved knob
 and *where it came from* (`[card]`/`[dataset]`/`[config]`/`[cli]`):
 
@@ -365,6 +505,32 @@ python -m pmtdeconv config resolve --preset na22-timewalk
 python -m pmtdeconv <command> --help     # command flag reference
 ```
 
+### The shipped dataset cards
+
+Every in-code dataset also ships as a YAML card under
+`pmtdeconv/data/datasets/` — the file-backed twin of the Python registry,
+generated by `dataset init --from-seed` and pinned by
+`tests/test_seed_cards.py` so the two cannot drift.
+
+```bash
+ls pmtdeconv/data/datasets/        # na22, na22_3ch, cd109, milliqan, lanl_*
+cp pmtdeconv/data/datasets/na22.yaml mydet.yaml   # start from a working example
+```
+
+They are machine-independent: data paths use `${PMTDECONV_DATA_ROOT}` (resolved
+the same way the in-code presets resolve it) and the bundled SPE templates are
+referenced relative to the card, so a card written on one machine works on
+another with no edit.
+
+The migration is **additive** — the in-code seeds remain the default
+resolution, so nothing about existing runs changes. The cards exist so a new
+detector is a YAML file, not a Python edit, and so a card can carry `meta:`
+provenance the registry cannot express.
+
+A run records the card it resolved in the manifest `inputs` (and hashes it,
+like every input), so two runs from two revisions of the same card are
+distinguishable in the record.
+
 ### Onboarding a new detector with a card
 
 A dataset **card** is a YAML file describing a detector — the file-backed twin
@@ -374,6 +540,36 @@ of the in-code presets. No Python edit is needed:
 python -m pmtdeconv dataset init mydet --out mydet.yaml   # scaffold (or --base na22)
 $EDITOR mydet.yaml                                         # fill in the specifics
 python -m pmtdeconv dataset lint mydet.yaml               # validate fields + settings
+```
+
+A card describes the detector; `meta:` is a free-form block for whatever a
+collaborator needs to know about it. pmtdeconv never interprets `meta:` — it
+copies it into every manifest, so a shared output directory answers "what
+detector is this, and who do I ask?":
+
+```yaml
+name: mydet
+dt_ns: 0.5
+polarity: -1
+notes: "Bench setup, Sep 2026. Timing studies only."
+
+meta:
+  pmt_serial:   HPK-ZK1234
+  source:       Na22
+  scintillator: LYSO + CsI
+  hv_volts:     1450
+  elog:         E41537
+  contact:      you@lab.gov
+  taken:        2026-09-01
+```
+
+Keys pmtdeconv *does* interpret (`polarity`, `dt_ns`, `pmt_type`, `hv_volts`,
+`fom`, `spe_charge`, `pe_band`, …) belong at the top level. A top-level key it
+does not recognize is reported rather than ignored, both by `dataset lint` and
+when the card is loaded for a run:
+
+```
+WARN  [mydet] unknown key 'polarty' is ignored — did you mean 'polarity'?
 python -m pmtdeconv area --dataset ./mydet.yaml --runs 42 # run it (path form)
 ```
 
@@ -611,8 +807,7 @@ outputs/
 │     ├── area_offline_run<RUN>.csv                         AREA_COLUMNS
 │     └── offline_hit_results_run<RUN>.csv                  HIT_RESULTS_COLUMNS
 ├── deconv_pulse_<dataset>_lab_cosine_{wavelet,advanced}[…]/
-│     ├── deconv_pulse.csv                                  HIT_RESULTS_COLUMNS
-│     ├── deconv_pulses.csv                                 compatibility alias
+│     ├── hits.csv                                          HIT_RESULTS_COLUMNS
 │     ├── all_results.csv
 │     └── manifest.json
 ├── timewalk[_gif]_<dataset>_run<RUN>[…]/
@@ -624,7 +819,7 @@ outputs/
       ├── sweep_summary.csv                   every (regime, config) row
       ├── sweep_curves_level<N>.png           scatter/drift/efficiency vs axis
       └── manifest.json
-└── artifact_index.json                         optional `info artifacts --write`
+└── artifact_index.json                         optional `results index --write`
 ```
 
 The regime fixtures themselves live under
@@ -639,33 +834,213 @@ sink (`pmtdeconv/pipeline/diagnostic.py`).
 All CSV column schemas live in `pmtdeconv/io/schemas.py`; the manifest's
 `csv_schema_versions` field records which schema version was used per output.
 
+## Known limitations & deferred follow-ups (0–20 PE re-scope, 2026-07)
+
+Documented so they don't silently evaporate; each is deliberate, not an
+oversight. The denoiser internals are *measured by the benchmark* rather than
+silently trusted:
+
+- **Denoiser caveats (instruments under test — unchanged on purpose):** the
+  SWT universal threshold √(2·ln N) is mis-calibrated for correlated SWT
+  coefficients (effectively over-aggressive); our STFT uses a global-median
+  noise estimate (record-length dependent) and hard-zeroing that deletes
+  sub-threshold few-PE pulses; the cosine filter's derivative discontinuity
+  at the cutoff rings (~7% pre-pulse side-lobe — `FIRST_PULSE_MIN_FRAC`).
+- **Tang-2024 reproduction**: the paper's own method runs as two
+  `benchmark denoisers` arms — `tang2024` (their FFT+STFT chain) and
+  `tang2024-fft` (plain FFT) — scored against the same MC truth as our arms,
+  with the published fig-12/14 values reported beside them in `verdict.json`:
+
+  ```bash
+  pmtdeconv benchmark denoisers --suite tang2024 --arms tang2024 tang2024-fft
+  ```
+
+  The paper publishes no code (checked arXiv, JINST 20 P03019, the group's
+  2026 follow-up, GitHub/Zenodo) and leaves three recognition constants
+  unspecified. **Those were fitted to the published fig-12 curve**, so
+  agreement with that curve is a consistency check, not independent
+  validation: FFT arm 0/0/16/80/98/97% vs published 0/0/14/80/99/99% at
+  3/4/5/6/8/10 ns; FFT+STFT 86/92/94% vs 84/92/96% at 5/6/8 ns; fig-14 charge
+  mean 0.995/1.009 vs 1.004, nonlinearity 1.3/1.9% vs ~1%, σ 0.101 vs 0.076.
+
+  **Open: the 3–4 ns corner.** Even with constants fitted toward it, the
+  enhanced chain splits 3/40% of 3/4 ns pairs against the published 58/72%.
+  The cause is *not* established. Two explanations fit: the published
+  algorithm description is incomplete, or our MC is harder than theirs — its
+  charge σ is 0.101 vs their 0.076, and every simulated hit carries a 7 ns
+  cable-reflection train. The discriminating experiment is to soften the MC
+  until σ matches 0.076 and re-measure 3 ns efficiency. Calibrations are
+  documented in `pmtdeconv/sim/tang2024_paper.py`.
+
+  Separately, our own arms currently score near zero at 3–6 ns on this MC
+  because the veto chain (`no_raw_peak`, `afterpulse_veto`) deletes the
+  second hit that the deconvolution *does* find (≥2 peaks in 94% of 5 ns
+  events). The head-to-head therefore measures our veto configuration there,
+  not our deconvolution.
+
+  The `--stft-threshold-mode fixed` knob on the PIPELINE (renamed from
+  `absolute` on 2026-09-18, with `--stft-abs-threshold` →
+  `--stft-fixed-threshold`) remains tang-calibrated only; it is what the
+  `stft-fixed-tang2024` benchmark arm runs.
+- **Deconvolution regularization**: `eps` in the FFT division is a
+  divide-by-zero guard, not Tikhonov/Wiener; the cosine filter is the
+  de-facto regularizer.
+- Baseline gate log-σ anchors are absolute mV constants (profile knob
+  `baseline_sigma_scale` scales them; per-detector anchors deferred);
+  "ADC"-named fields hold mV; AreaMode carries a second, looser baseline
+  gate than the hits profiles (unification deferred).
+- `na22_3ch` multi-hit work needs a single-peak sampled kernel + cutoff
+  revisit (the production ch2 envelope kernel is timing-track only).
+- In-regime re-tuned winners land as opt-in named presets, not new dataset
+  defaults; `tune fom` on photopeaks is DEPRECATED as a deconv-charge
+  validation target (out of domain).
+- `tune wavelet` / `tune stft` still build their own arg namespaces (bypass
+  Detector).
+
+## Code architecture (for contributors)
+
+How a command actually runs, end to end. The math itself lives in
+`pmtdeconv/core/` — the single source of truth; everything below is the
+plumbing that reaches it.
+
+### Dispatch — `pmtdeconv/cli.py`
+
+The whole command tree is one dict, `SUBCOMMANDS`, mapping *verb → leaf →
+module name* under `pmtdeconv/commands/`. Dispatch is deliberately
+**two-stage**:
+
+- **Stage 1** registers only verb/leaf *names* plus a one-line help string from
+  the static `LEAF_HELP` table. It imports no command module, so
+  `pmtdeconv --help` works even without uproot/matplotlib installed.
+- **Stage 2** imports just the selected leaf, builds its real parser
+  (`add_common_args` + the module's `add_arguments`), re-parses the leftover
+  argv, and calls `run(args)`.
+
+`info`, `config`, and `results` build eagerly (they own their own sub-parser
+trees). A missing scientific-stack import is caught in `main()` and turned into
+a `pip install -e .` hint instead of a traceback.
+
+### Command module contract
+
+Every module in `commands/` exposes exactly two functions — no business logic
+lives in `cli.py`:
+
+```python
+def add_arguments(parser): ...   # register this command's flags
+def run(args) -> int: ...        # execute from the parsed Namespace
+```
+
+Flags default to `None` so the resolver can distinguish "user passed it" from
+"user left it alone".
+
+### Settings resolution — `pmtdeconv/presets/__init__.py`
+
+`run()` starts with `settings, provenance = resolve_settings(args)`, layering
+four sources, lowest to highest:
+
+```
+Settings default  <  dataset (registry seed or YAML card)  <  config preset  <  CLI flag
+```
+
+`Settings` is one flat dataclass holding everything resolvable. CLI flags are
+routed through the `CLI_TO_SETTINGS` map, because a few argparse names differ
+from their Settings field (`branches` → `branch_pattern`, `manifest` →
+`manifest_path`, `spe_charge` → `spe_charge_pvs`). Every assignment records
+*which layer won* into `provenance` — that is exactly what `config resolve`
+prints and what the run banner and manifest carry.
+
+### Settings → Detector → engine
+
+```
+commands/hits.py::run
+  └─ Detector.from_settings(settings)          # ONE resolution point:
+     │                                         #   template + veto profile + gain
+     └─ process_hits.process_run{,_object,_stft}      (format-specific readers)
+          └─ event_source.iter_flat_run  →  EventRecord stream
+             │                              (polarity applied exactly once, here)
+             └─ pipeline.run_hits  →  _process_event per waveform
+                  └─ core/{kernels,filters,dsp,peaks}
+```
+
+`Detector` is a typed dataclass whose field names mirror what the pipeline
+reads off its `args` parameter — it *is* the `args` the engine sees. It
+replaced an untyped `SimpleNamespace` round-trip that repeatedly caused
+silently-dropped flags.
+
+`_process_event` (in `pipeline/pipeline.py`) is the single shared body behind
+all three readers; the reader only chooses the `HitsProfile` (wavelet vs STFT
+constants). Per waveform: saturation flag → raw-nPE regime flag → baseline →
+cosine-filtered FFT deconvolution → denoise → `find_peaks` → peak ordering →
+trough-walked integration windows → vetoes → one row dict per peak. `area`
+mirrors this through `run_area` / `AreaMode` in the same module.
+
+Rows are reindexed against `io/schemas.py` (the single source of column truth)
+and written as three tables: `hits.csv` (successes),
+`all_results.csv` (everything, with a `reason`), and
+`deconv_negative_charge.csv`.
+
+### Outputs and provenance
+
+Output directories are computed by `io/output_paths.py` and always carry the
+preset name and `--out-suffix`. Downstream commands find prior results by
+reconstructing the same path (`resolve_area_csv` / `resolve_pulse_csv`), which
+is why `timewalk run --dataset na22 --runs 65213 --preset na22-timewalk` needs
+no explicit `--hits-csv`. Every invocation ends with `write_manifest`:
+resolved settings, per-field provenance, inputs/outputs (optionally SHA256'd),
+git SHA, library versions, duration, and a command-specific `stats` block.
+
+### Adding a command, or a flag
+
+A new command is a module in `commands/` with the two functions above, plus one
+line in `SUBCOMMANDS` and one in `LEAF_HELP`.
+
+A new *knob* that presets or cards should be able to set has to land in every
+hop — argparse flag → `CLI_TO_SETTINGS` entry → `Settings` field → `Detector`
+field → the pipeline's `getattr`. Missing a hop makes the flag silently
+no-op, which has happened repeatedly; `tests/test_flag_plumbing.py` is the
+meta-test that now catches it.
+
 ## Tests
 
 From a clean checkout:
 
 ```bash
-# Editable install + dev deps (pytest, pytest-cov):
+# 1. Editable install + dev deps (pytest, pytest-cov):
 pip install -e .[dev]
 
-# Or just the dev deps if pmtdeconv is already on PYTHONPATH:
-pip install -r tests/requirements-dev.txt
+# 2. Build the synthetic ROOT fixtures + bless this checkout's goldens.
+#    Required once; without it the 12 golden tests fail (they compare against
+#    reference bytes that are gitignored, not shipped).
+python tests/fixtures/bless_goldens.py
 
-# Then:
-python -m pytest tests/                                # full suite
+# 3. Run:
+python -m pytest tests/                                # full suite (280 tests)
 python -m pytest tests/test_pmtdeconv_cli.py -v        # CLI wiring + preset resolution
 python -m pytest tests/test_golden_fixture.py -v       # byte-identical fixtures
+python -m pytest tests/test_flag_plumbing.py -v        # no CLI flag silently dropped
 python -m pytest tests/test_tune_cli.py -v             # tune leaves end-to-end
 python -m pytest tests/test_truth_schema.py -v         # regime truth CSV schema
 python -m pytest tests/test_vetoes.py -v               # math
 ```
 
-The full suite should pass before release. The 8 byte-identical goldens
-cover three dataset formats: flat (`tests/fixtures/flattened_Run0.root`),
-object (`tests/fixtures/MilliQan_Run835.99_triple.root`), and offline
+The full suite should pass before release. The 12 byte-identical goldens cover
+four dataset formats: flat (`tests/fixtures/flattened_Run0.root`), object
+(`tests/fixtures/MilliQan_Run835.99_triple.root`), DRSprocessing
+(`tests/fixtures/processed/Run0.root`), and offline
 (`tests/fixtures/MilliQan_Run99.synth_triple_offline.root`).
+
+After a *deliberate* output change, re-bless and inspect the diff:
+
+```bash
+python tests/fixtures/bless_goldens.py --force   # then confirm every changed byte
+```
+
+Record *why* in `tests/fixtures/GOLDEN_PROVENANCE.md` — the decision trail is
+tracked even though the bytes are not. A golden failure you did not intend is a
+regression: fix the code rather than blessing over it.
 
 ## Dependencies
 
 - `numpy`, `scipy`, `pandas`, `matplotlib`
 - `uproot`, `awkward` (ROOT file I/O)
-- `pywavelets` (only required when calling `utils.wavelet_denoise`)
+- `pywavelets` (wavelet denoising — `core.dsp.wavelet_denoise`)

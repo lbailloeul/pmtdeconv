@@ -29,6 +29,34 @@ TUNED_CONFIGS['na22-cosine-tuned-2026-06-14-level3'] = ConfigPreset(
     description='Auto-tuned by `pmtdeconv tune cosine` on 2026-06-14. Regime level3; cosine cutoff 100.0 MHz; score=-0.4413, drift=-1.221%, scatter=4.649%.',
 )
 
+TUNED_CONFIGS['na22-cosine-tuned-2026-07-29-level1'] = ConfigPreset(
+    name='na22-cosine-tuned-2026-07-29-level1',
+    base_dataset='na22',
+    overrides={'cosine_cutoff_mhz': 180.0},
+    description='Auto-tuned by `pmtdeconv tune cosine` on 2026-07-29. Regime level1; cosine cutoff 180.0 MHz; score=-0.1023, drift=-1.629%, scatter=15.328%.',
+)
+
+TUNED_CONFIGS['na22-cosine-tuned-2026-07-29-level2'] = ConfigPreset(
+    name='na22-cosine-tuned-2026-07-29-level2',
+    base_dataset='na22',
+    overrides={'cosine_cutoff_mhz': 190.0},
+    description='Auto-tuned by `pmtdeconv tune cosine` on 2026-07-29. Regime level2; cosine cutoff 190.0 MHz; score=-0.3661, drift=-0.102%, scatter=8.792%.',
+)
+
+TUNED_CONFIGS['na22-cosine-tuned-latest-level1'] = ConfigPreset(
+    name='na22-cosine-tuned-latest-level1',
+    base_dataset='na22',
+    overrides={'cosine_cutoff_mhz': 180.0},
+    description='Alias → latest tune winner (na22-cosine-tuned-2026-07-29-level1).',
+)
+
+TUNED_CONFIGS['na22-cosine-tuned-latest-level2'] = ConfigPreset(
+    name='na22-cosine-tuned-latest-level2',
+    base_dataset='na22',
+    overrides={'cosine_cutoff_mhz': 190.0},
+    description='Alias → latest tune winner (na22-cosine-tuned-2026-07-29-level2).',
+)
+
 TUNED_CONFIGS['na22-cosine-tuned-latest-level3'] = ConfigPreset(
     name='na22-cosine-tuned-latest-level3',
     base_dataset='na22',

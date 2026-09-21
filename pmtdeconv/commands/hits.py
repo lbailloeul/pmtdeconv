@@ -21,12 +21,7 @@ import time
 from pathlib import Path
 
 from pmtdeconv import PROJECT_ROOT
-from pmtdeconv.io.deconv_pulse import (
-    DECONV_PULSE_COMPAT_CSV,
-    DECONV_PULSE_CSV,
-    DECONV_PULSE_COMPAT_ROLE,
-    DECONV_PULSE_ROLE,
-)
+from pmtdeconv.io.deconv_pulse import DECONV_PULSE_CSV, DECONV_PULSE_ROLE
 from pmtdeconv.io.manifest import maybe_dry_run_exit, write_manifest
 from pmtdeconv.io.output_paths import pulse_output_dir
 from pmtdeconv.pipeline.detector import Detector
@@ -34,7 +29,7 @@ from pmtdeconv.presets import resolve_settings
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    g = parser.add_argument_group("pulse")
+    g = parser.add_argument_group("hits")
     g.add_argument("--template", type=str, default=None,
                    help="SPE template CSV path. Default: dataset's preset.")
     g.add_argument("--allow-generic-fallback", dest="allow_generic_fallback",
@@ -66,12 +61,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         action="store_true", default=None)
     vetoes.add_argument("--vetoes", dest="no_vetoes", action="store_false",
                         help="Enable vetoes, overriding a preset that disables them.")
-    g.add_argument("--peak-order", choices=("chrono", "tallest", "auto"),
+    g.add_argument("--peak-order", choices=("chrono", "tallest", "first", "auto"),
                    default=None,
                    help="How to assign peak_id within a waveform. "
                         "`chrono` (legacy): left-to-right in time. "
                         "`tallest`: descending u_rec amplitude (peak_id=1 "
                         "= largest peak, useful when vetoes are off). "
+                        "`first`: the first peak >=15%% of the tallest gets "
+                        "peak_id=1 (skips deconv ringing side-lobes; "
+                        "sub-threshold peaks keep their rows, ordered last) — "
+                        "pair with the t_half CSV column (CFD-50 rising-edge "
+                        "crossing, MQAna `halftime`) for low-jitter timewalk. "
                         "`auto` (default): chrono if vetoes on, tallest "
                         "if --no-vetoes (decision 8).")
     g.add_argument("--stft-nperseg-ns", type=float, default=None,
@@ -80,6 +80,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                    help="STFT high-frequency cutoff in MHz (default 175).")
     g.add_argument("--stft-amp-threshold", type=float, default=None,
                    help="STFT amplitude threshold (default 10).")
+    g.add_argument("--stft-threshold-mode", choices=("median", "fixed"),
+                   default=None,
+                   help="STFT masking. 'median' (default): element-wise mask "
+                        "at global-median × --stft-amp-threshold, so the cut "
+                        "adapts to each waveform. 'fixed' (Tang 2411.07620): "
+                        "keep whole time columns whose sub-cutoff amplitude "
+                        "clears --stft-fixed-threshold — the same cut for "
+                        "every waveform.")
+    g.add_argument("--stft-fixed-threshold", type=float, default=None,
+                   help="T-F amplitude threshold for --stft-threshold-mode "
+                        "fixed (scipy STFT units).")
     # Bug-fix 1 (2026-05-30 scan): expose cosine_cutoff_mhz so tuned
     # presets actually reach the processor. Without this, tuned recipes
     # silently revert to the pipeline's hardcoded defaults (450 MHz
@@ -87,6 +98,44 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--cosine-cutoff-mhz", type=float, default=None,
                    help="Cosine low-pass cutoff in MHz. Default: dataset "
                         "preset. Tuned presets via --preset propagate here.")
+    g.add_argument("--spe-charge", dest="spe_charge", type=str, nargs="+",
+                   default=None, metavar="BR=PVS",
+                   help="Per-branch 1-PE charge anchor in pVs (e.g. "
+                        "d0_ch1=820 d0_ch2=790). One-off override of the "
+                        "card's spe_charge; fit it with `gain calibrate`.")
+    g.add_argument("--pe-band", dest="pe_band", type=float, nargs=2,
+                   default=None, metavar=("LO", "HI"),
+                   help="Deconvolution applicability window in nPE "
+                        "(default 0 20 — the linear-model domain). Drives the "
+                        "in_regime flag + --in-regime-only.")
+    g.add_argument("--veto-profile", dest="veto_profile", type=str,
+                   default=None, metavar="NAME",
+                   help="Run under a NAMED veto profile (builtins: "
+                        "wavelet_hits, stft_hits, benchmark_hits; a YAML "
+                        "under <data_root>/calibrations/veto_profiles/ "
+                        "shadows builtins for explicit names). Applies "
+                        "IDENTICAL thresholds regardless of --denoiser and "
+                        "honors --no-vetoes/--peak-order/--denoise-raw on "
+                        "every denoiser — the fair-benchmark switch.")
+    g.add_argument("--in-regime-only", dest="in_regime_only",
+                   action="store_true", default=None,
+                   help="Process ONLY waveforms with raw nPE inside --pe-band "
+                        "(rejected events get reason=out_of_pe_range in "
+                        "all_results.csv). Default: flag-only, include all. "
+                        "Requires a spe_charge anchor (see `gain calibrate`).")
+    g.add_argument("--entry-list", dest="entry_list", type=str, default=None,
+                   metavar="CSV",
+                   help="Process only the entries listed (CSV with an "
+                        "`entry` column — e.g. `select multihit`'s "
+                        "event_list.csv — or one index per line).")
+    fftpad = g.add_mutually_exclusive_group()
+    fftpad.add_argument("--fft-pad", dest="fft_pad", action="store_true",
+                        default=None,
+                        help="Linear (zero-padded to 2N) deconvolution "
+                             "(default ON since 2026-07-28).")
+    fftpad.add_argument("--no-fft-pad", dest="fft_pad", action="store_false",
+                        help="Circular (unpadded) deconvolution — reproduces "
+                             "pre-2026-07-28 output bytes exactly.")
     # PR 10 / Q5: diagnostic intermediate dump per event.
     g.add_argument("--diagnostic-events", type=int, nargs="+", default=None,
                    metavar="N",
@@ -111,6 +160,34 @@ def _veto_stats(acc) -> dict:
     if acc is not None:
         return {"veto_accounting": acc.to_dict()}
     return {}
+
+
+def _gain_stats(detector: Detector, settings) -> dict:
+    """PE-scale provenance + gate config for the manifest ``stats`` block."""
+    g = detector.gain
+    out = {"pe_gate": {"pe_band": list(detector.pe_band),
+                       "in_regime_only": bool(detector.in_regime_only)}}
+    if g is not None:
+        out["gain"] = {"source": g.provenance.source,
+                       "spe_charge_pvs": g.per_branch,
+                       **({"detail": g.provenance.detail}
+                          if g.provenance.detail else {})}
+    return out
+
+
+def _require_gain_for_gate(detector: Detector) -> None:
+    """`--in-regime-only` without a PE anchor is a hard, loud error — the tool
+    never invents a charge scale (governing philosophy)."""
+    if detector.in_regime_only and (detector.gain is None
+                                    or not detector.gain.resolved):
+        raise SystemExit(
+            "--in-regime-only needs a per-branch 1-PE charge anchor and none "
+            "is configured (no card `spe_charge`, no --spe-charge, no gain-"
+            "catalog entry for this pmt_type).\n"
+            "  Fit one first:  pmtdeconv gain calibrate --dataset <ds> "
+            "--runs <N>\n"
+            "  then paste the proposed `spe_charge:` block into the dataset "
+            "card (or pass --spe-charge BR=VAL).")
 
 
 def _build_diagnostic_sink(settings, out_dir, diag_events):
@@ -150,7 +227,7 @@ def _run_stft(settings, provenance, t0, detector, diag_events) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     detector.out_dir = str(out_dir)
 
-    if maybe_dry_run_exit(subcommand="pulse", settings=settings,
+    if maybe_dry_run_exit(subcommand="hits", settings=settings,
                           provenance=provenance, out_dir=out_dir,
                           duration_seconds=time.time() - t0):
         return 0
@@ -165,7 +242,6 @@ def _run_stft(settings, provenance, t0, detector, diag_events) -> int:
     outputs_meta = []
     for role, name in [
         (DECONV_PULSE_ROLE, DECONV_PULSE_CSV),
-        (DECONV_PULSE_COMPAT_ROLE, DECONV_PULSE_COMPAT_CSV),
         ("all_results",        "all_results.csv"),
     ]:
         p = out_dir / name
@@ -188,7 +264,7 @@ def _run_stft(settings, provenance, t0, detector, diag_events) -> int:
     manifest_path = (Path(settings.manifest_path)
                      if settings.manifest_path else (out_dir / "manifest.json"))
     write_manifest(
-        subcommand="pulse",
+        subcommand="hits",
         settings=settings, provenance=provenance,
         inputs=inputs_meta, outputs=outputs_meta,
         stats={"denoiser": "stft", "runs": settings.runs or [],
@@ -196,7 +272,10 @@ def _run_stft(settings, provenance, t0, detector, diag_events) -> int:
                "stft_freq_cutoff_mhz": detector.stft_freq_cutoff_mhz,
                "stft_amp_threshold": detector.stft_amp_threshold,
                "veto_profile": detector.veto_profile,
-               **_template_stats(detector), **_veto_stats(acc)},
+               "veto_profile_source": detector.veto_profile_source,
+               "veto_profile_version": detector.veto_profile_version,
+               **_template_stats(detector), **_veto_stats(acc),
+               **_gain_stats(detector, settings)},
         out_path=manifest_path,
         duration_seconds=time.time() - t0,
         hash_inputs=settings.hash_inputs,
@@ -216,6 +295,7 @@ def run(args: argparse.Namespace) -> int:
     # Carries the resolved Template (explicit/dataset/catalog/generic) +
     # provenance. Polarity now flows through the shared event source.
     detector = Detector.from_settings(settings, provenance, mode="hits")
+    _require_gain_for_gate(detector)
 
     if settings.denoiser == "stft":
         return _run_stft(settings, provenance, t0, detector, diag_events)
@@ -237,7 +317,7 @@ def run(args: argparse.Namespace) -> int:
                pulse_output_dir(settings, "wavelet"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if maybe_dry_run_exit(subcommand="pulse", settings=settings,
+    if maybe_dry_run_exit(subcommand="hits", settings=settings,
                           provenance=provenance, out_dir=out_dir,
                           duration_seconds=time.time() - t0):
         return 0
@@ -282,8 +362,6 @@ def run(args: argparse.Namespace) -> int:
     outputs_meta = [
         {"role": DECONV_PULSE_ROLE,
          "path": str(out_dir / DECONV_PULSE_CSV)},
-        {"role": DECONV_PULSE_COMPAT_ROLE,
-         "path": str(out_dir / DECONV_PULSE_COMPAT_CSV)},
         {"role": "all_results",
          "path": str(out_dir / "all_results.csv")},
     ]
@@ -295,13 +373,16 @@ def run(args: argparse.Namespace) -> int:
     manifest_path = (Path(settings.manifest_path)
                      if settings.manifest_path else (out_dir / "manifest.json"))
     write_manifest(
-        subcommand="pulse",
+        subcommand="hits",
         settings=settings,
         provenance=provenance,
         inputs=inputs_meta,
         outputs=outputs_meta,
         stats={"runs": detector.runs, "veto_profile": detector.veto_profile,
-               **_template_stats(detector), **_veto_stats(acc)},
+               "veto_profile_source": detector.veto_profile_source,
+               "veto_profile_version": detector.veto_profile_version,
+               **_template_stats(detector), **_veto_stats(acc),
+               **_gain_stats(detector, settings)},
         out_path=manifest_path,
         duration_seconds=time.time() - t0,
         hash_inputs=settings.hash_inputs,

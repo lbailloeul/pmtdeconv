@@ -10,14 +10,14 @@ the *same* gate→baseline→deconv→denoise→tail loop twice. They now both b
 :class:`~pmtdeconv.pipeline.pipeline.AreaMode` strategy and feed the shared
 :func:`~pmtdeconv.pipeline.pipeline.run_area`; the two functions here are thin
 I/O readers (flat ``waveforms`` tree vs nested object format). Their signatures
-are unchanged so ``commands.waveform`` and ``commands.tune_cosine`` keep working
+are unchanged so ``commands.area`` and ``commands.tune_cosine`` keep working
 (the ``process_run`` shim the plan calls for).
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-# Re-exported for backwards compatibility: ``commands.waveform`` and
+# Re-exported for backwards compatibility: ``commands.area`` and
 # ``commands.tune_cosine`` do ``from ...process_area import process_run,
 # FALLBACK_TEMPLATE``. The canonical definition now lives in pipeline.template.
 from pmtdeconv.pipeline.pipeline import (  # noqa: F401
@@ -43,7 +43,10 @@ def process_run_object(root_path, dt_ns, sig_start, sig_end, n_intervals,
                        *, polarity: int = -1, run_num: int = 0,
                        tree_name: str = "Events",
                        step_size: int = 100,
-                       measure_width: bool = False):
+                       measure_width: bool = False,
+                       gain=None, pe_band=(0.0, 20.0),
+                       in_regime_only: bool = False,
+                       entry_keep=None):
     """Object-format area reader for LANL_835/movedBar.
 
     Same shared prefix + tail as :func:`process_run` (via :func:`run_area`);
@@ -83,11 +86,14 @@ def process_run_object(root_path, dt_ns, sig_start, sig_end, n_intervals,
             branches=branches, entry_stop=entry_stop, step_size=step_size,
             tree_name=tree_name,
         ):
+            if entry_keep is not None and rec.entry not in entry_keep:
+                continue
             yield (rec.run, rec.cycle, rec.entry, rec.branch, rec.wave, rec.N)
 
     df = run_area(_events(), dt_ns=dt_ns, templates=templates,
                   cosine_cutoff_mhz=cosine_cutoff_mhz, wavelet=wavelet,
-                  wlevel=wlevel, denoise_mode=mode, thresh_k=thresh_k, area=area)
+                  wlevel=wlevel, denoise_mode=mode, thresh_k=thresh_k, area=area,
+                  gain=gain, pe_band=pe_band, in_regime_only=in_regime_only)
     print(f"  Total rows : {len(df)}")
     if len(df):
         print(df["reason"].value_counts().to_string())
@@ -101,7 +107,10 @@ def process_run(root_path, dt_ns, sig_start, sig_end, n_intervals,
                 t_peak_min_ns, afterpulse_window_ns, afterpulse_height_ratio,
                 fft_pad, wrap_ratio, wrap_abs_k,
                 entry_stop, templates, branches_keep=None,
-                *, polarity: int = 1, measure_width: bool = False):
+                *, polarity: int = 1, measure_width: bool = False,
+                gain=None, pe_band=(0.0, 20.0),
+                in_regime_only: bool = False,
+                entry_keep=None):
     """For every trigger, deconvolve each channel and integrate over
     ``[sig_start, sig_end]``. Returns a DataFrame with columns
     ``run, cycle, entry, branch, interval, area, peak_height[, width_ns]``.
@@ -140,11 +149,14 @@ def process_run(root_path, dt_ns, sig_start, sig_end, n_intervals,
             branches=(list(branches_keep) if branches_keep else None),
             entry_stop=entry_stop, step_size=STEP,
         ):
+            if entry_keep is not None and rec.entry not in entry_keep:
+                continue
             yield (rec.run, rec.cycle, rec.entry, rec.branch, rec.wave, rec.N)
 
     df = run_area(_events(), dt_ns=dt_ns, templates=templates,
                   cosine_cutoff_mhz=cosine_cutoff_mhz, wavelet=wavelet,
-                  wlevel=wlevel, denoise_mode=mode, thresh_k=thresh_k, area=area)
+                  wlevel=wlevel, denoise_mode=mode, thresh_k=thresh_k, area=area,
+                  gain=gain, pe_band=pe_band, in_regime_only=in_regime_only)
     print(f"  Total rows : {len(df)}")
     if len(df):
         print(df["reason"].value_counts().to_string())

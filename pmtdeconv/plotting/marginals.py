@@ -95,7 +95,13 @@ def render_marginals(
                          aspect="auto", cmap=cmap, norm=norm)
     if norm is None:
         pcm.set_clim(vmin=1)
-    unit = f"[arb. units × {scale:g}]" if scale != 1 else "[arb. units]"
+    # Deconvolved area is genuinely in pVs (unit-area kernel × unity-DC-gain
+    # filter); the default scale=1e-3 converts to nVs. Peak height stays a.u.
+    if metric == "area":
+        unit = ("[nVs]" if np.isclose(scale, 1e-3)
+                else ("[pVs]" if scale == 1 else f"[pVs × {scale:g}]"))
+    else:
+        unit = f"[arb. units × {scale:g}]" if scale != 1 else "[arb. units]"
     ax_main.set_xlabel(f"CH1 {metric.replace('_', ' ')} {unit}")
     ax_main.set_ylabel(f"CH2 {metric.replace('_', ' ')} {unit}")
     style_root_axes(ax_main)

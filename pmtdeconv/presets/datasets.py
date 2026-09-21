@@ -22,9 +22,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
-from pmtdeconv import PROJECT_ROOT
+from pmtdeconv import PACKAGE_DIR, PROJECT_ROOT
 
 
 # Path conventions: per-dataset files live under a base data root in
@@ -76,13 +76,19 @@ DATA_DIR = _resolve_data_root()
 # We expose the stacked CSV here (the canonical one) and the na22fmt
 # alias so each legacy loader sees the format it expects until the
 # loaders are unified in PR 2.
+#
+# These live INSIDE the package (2026-09-18). They previously pointed into
+# ``outputs/``, which is gitignored — so on any machine but the author's the
+# na22 and cd109 defaults referenced files that did not exist, and (before the
+# existence check in pipeline/template.py) the run silently fell back to the
+# generic kernel while the manifest still named the missing CSV. Bundling them
+# means a fresh clone or `pip install` can run those datasets as shipped.
+_BUNDLED_TEMPLATES = PACKAGE_DIR / "data" / "templates"
 CD109_STACKED_UNLOCKED_CSV = (
-    PROJECT_ROOT / "outputs" / "biexp_fits_Cd109_lab_stacked"
-    / "spe_template_per_channel_unlocked.csv"
+    _BUNDLED_TEMPLATES / "spe_template_per_channel_unlocked.csv"
 )
 CD109_STACKED_UNLOCKED_NA22FMT_CSV = (
-    PROJECT_ROOT / "outputs" / "biexp_fits_Cd109_lab_stacked"
-    / "spe_template_unlocked_na22fmt.csv"
+    _BUNDLED_TEMPLATES / "spe_template_unlocked_na22fmt.csv"
 )
 
 
@@ -144,6 +150,21 @@ class DatasetPreset:
     # tubeB.csv) instead of one shared template. When set it supersedes
     # default_template_csv for the listed channels. None = single-CSV behavior.
     template_csv_by_channel: Optional[Dict[str, Path]] = None
+    # 0–20 PE re-scope (2026-07-28): per-branch 1-PE charge in pVs (mV·ns) —
+    # the PE-scale anchor. {branch: charge}; nPE = deconvolved charge / this.
+    # EXPERT-SET (card key `spe_charge`), proposed by `gain calibrate` from a
+    # fit of the 1-PE charge-quantization peak; None = uncalibrated (nPE
+    # columns stay blank, `--in-regime-only` refuses to run).
+    spe_charge_pvs: Optional[Dict[str, float]] = None
+    # Free-form provenance a card may carry: tube serial, source, geometry,
+    # ELOG reference, who took the data. pmtdeconv never interprets any of it —
+    # it exists so a shared card answers "what detector is this, and who do I
+    # ask about it?". Copied onto Settings, so it lands in every manifest.
+    meta: Optional[Dict[str, Any]] = None
+    # The deconvolution applicability window in nPE (card key `pe_band`).
+    # Default = the literature-established 0–20 PE linear-model domain
+    # (Tang et al. 2411.07620; vault 17b).
+    pe_band: Tuple[float, float] = (0.0, 20.0)
 
 
 DATASETS: Dict[str, DatasetPreset] = {
@@ -190,12 +211,23 @@ DATASETS: Dict[str, DatasetPreset] = {
         cosine_cutoff_mhz=100.0,
         default_template_csv=None,    # build per-run: template build --dataset na22_3ch
         spe_band_mv=(50.0, 200.0),
-        # ELOG E41537: HV1=-1900 V, HV2=+1300 V (bipolar). ch3 HV unrecorded.
+        # ELOG E41537 — HV/source/detector VARY per run (hv_volts below = 66727):
+        #   66727             : Na22,  LYSO+CsI,   HPK PMT,  HV1 -1900 / HV2 +1300
+        #   66808/66809/66810 : Ba133, CeBr+Bar2,  7725 PMT, HV1 -1400 / HV2 -2000
         pmt_type="na22_3ch_bipolar",
         hv_volts={"d0_ch1": -1900.0, "d0_ch2": 1300.0},
-        notes=("Na22 lab DRS4, 3-channel bipolar mode (Runs 66727+, "
-               "~1.98 GS/s, Range Center 0, negative-going). "
-               "Templates built from the runs themselves."),
+        notes=("Recent 3-channel bipolar DRS4 runs (66727+, Range Center 0, "
+               "negative-going). SOURCE / DETECTOR / PMT VARY PER RUN — check "
+               "ELOG E41537 before use: 66727 = Na22 (LYSO+CsI, HPK PMT); "
+               "66808/66809/66810 = Ba133 (CeBr+Bar2, 7725 PMT). This is a "
+               "DIFFERENT tube than the Cd109/Na22 (E41473, non-7725) template, "
+               "so templates are built per run (default_template_csv=None). "
+               "TRACK-2 / TIMING ONLY for multi-hit work: the production ch2 "
+               "template is the all-stack ENVELOPE kernel (cable-reflection "
+               "echoes baked in) that deliberately collapses a clump into ONE "
+               "spike — optimal Δt, NO intra-clump PE separation. Multi-hit / "
+               "0–20 PE charge analysis here needs a single-peak (sampled) "
+               "kernel + a cutoff revisit (vault 14d; deferred follow-up)."),
     ),
     "cd109": DatasetPreset(
         name="cd109",
@@ -323,12 +355,21 @@ def resolve_dataset_with_source(
         name_or_path: str) -> Tuple[DatasetPreset, str, dict]:
     """Resolve a ``--dataset`` value to ``(DatasetPreset, source, overrides)``.
 
-    ``source`` is ``"card"`` (a YAML card — supplied by path, or a registry card
-    shadowing a same-named seed) or ``"dataset"`` (an in-code seed). Resolution
-    order: card PATH → registry card (shadows seed) → in-code seed. ``overrides``
-    is the card's ``settings:`` block (analysis-knob Settings overrides, so a
-    card can subsume a config preset); ``{}`` for an in-code seed. The source is
-    recorded in the manifest provenance so a shadowing card is never silent.
+    Resolution order: card PATH → registry card under
+    ``<data_root>/calibrations/datasets/`` → SHIPPED card under
+    ``pmtdeconv/data/datasets/`` → in-code seed.
+
+    ``source`` is ``"card"`` for a user-supplied card (a path, or a registry
+    card shadowing the default) and ``"dataset"`` for the shipped default —
+    whether that came from the shipped card or the in-code seed. So ``[card]``
+    in the banner/manifest keeps meaning "something user-supplied overrides the
+    default", and is never silent. ``overrides`` is the card's ``settings:``
+    block (``{}`` for a seed).
+
+    Shipped cards resolve since 2026-09-21: before, ``--dataset na22`` ignored
+    ``pmtdeconv/data/datasets/na22.yaml`` entirely, so editing it did nothing.
+    They round-trip exactly to their seeds (``tests/test_seed_cards.py``), so
+    resolved settings — and every output byte — are unchanged.
     """
     from pmtdeconv.presets.cards import (
         is_card_reference, load_card, read_card_settings)
@@ -338,7 +379,37 @@ def resolve_dataset_with_source(
     card = _registry_card_path(name_or_path)
     if card is not None:
         return load_card(card), "card", read_card_settings(card)
+    shipped = _shipped_card_path(name_or_path)
+    if shipped is not None:
+        return load_card(shipped), "dataset", read_card_settings(shipped)
     return get_dataset(name_or_path), "dataset", {}
+
+
+def _shipped_card_path(name: str) -> Optional[Path]:
+    """The card shipped inside the package for ``name``, if any."""
+    base = PACKAGE_DIR / "data" / "datasets"
+    for ext in (".yaml", ".yml"):
+        cand = base / f"{name}{ext}"
+        if cand.exists():
+            return cand
+    return None
+
+
+def card_path_for(name_or_path: str) -> Optional[Path]:
+    """The card FILE a ``--dataset`` value resolves to, or None for a seed.
+
+    The manifest records it as an input so a run says which card produced it
+    (and ``--hash-inputs`` fingerprints it). Without this, two runs from two
+    revisions of the same card were indistinguishable in the record.
+    """
+    from pmtdeconv.presets.cards import _resolve_card_path, is_card_reference
+    if is_card_reference(name_or_path):
+        try:
+            return _resolve_card_path(name_or_path)
+        except (FileNotFoundError, OSError):
+            return None
+    return (_registry_card_path(name_or_path)
+            or _shipped_card_path(name_or_path))
 
 
 def resolve_dataset(name_or_path: str) -> DatasetPreset:

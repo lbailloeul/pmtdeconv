@@ -10,7 +10,7 @@ hand them to ``run_hits``, write the CSV tables, and emit the veto-rate report.
 This mirrors how :mod:`pmtdeconv.pipeline.process_area` feeds ``run_area``.
 
 Polarity is applied once, in the event source (the 2026-06-10 flat-path bug
-class). Both the legacy scripts and ``pmtdeconv.commands.pulse`` call these; the
+class). Both the legacy scripts and ``pmtdeconv.commands.hits`` call these; the
 byte-identical regression tests (``tests/test_golden_fixture.py``) confirm the
 relocation didn't drift.
 """
@@ -34,6 +34,21 @@ from pmtdeconv.pipeline.pipeline import (   # noqa: F401
 )
 from pmtdeconv.pipeline.template import FALLBACK_TEMPLATE   # noqa: F401
 
+
+def _hits_profile(args, default_kind: str) -> HitsProfile:
+    """The HitsProfile for this run.
+
+    An EXPLICITLY-selected veto profile (``--veto-profile``; the Detector
+    carries the resolved object) is honored with ALL behavior switches on —
+    identical thresholds regardless of denoiser, the fair-benchmark condition.
+    Otherwise the legacy per-denoiser constant (byte-identical default path).
+    """
+    vp = getattr(args, "veto_profile_obj", None)
+    if vp is not None and getattr(args, "veto_profile_explicit", False):
+        return HitsProfile.from_veto_profile(vp, denoiser_kind=default_kind,
+                                             allow_all=True)
+    return STFT_PROFILE if default_kind == "stft" else WAVELET_PROFILE
+
 # Defaults matching the legacy module so behavior is byte-identical when no
 # override is supplied via args.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -51,9 +66,49 @@ def _legacy_load_channel_templates(csv_path):
     from pmtdeconv.io.templates import load_template
     templates = load_template(csv_path, strict=False, verbose=True)
     for branch, tmpl in templates.items():
+        if tmpl.get("kind") == "sampled":
+            print(f"  {branch}: sampled kernel ({len(tmpl['y'])} samples)")
+            continue
         print(f"  {branch}: τ_rise={tmpl['tau_rise']:.3f} ns, "
               f"τ_fall={tmpl['tau_fall']:.3f} ns, σ={tmpl['sigma']:.3f} ns")
     return templates
+
+
+def _templates_for_run(args):
+    """Per-branch SPE templates for this run, or ``{}`` meaning generic kernel.
+
+    ``args.fit_csv`` is None exactly when template resolution chose the generic
+    kernel (``--allow-generic-fallback``, or an unresolved template). Until
+    2026-09-18 that case loaded ``FIT_CSV_DEFAULT`` — a hardcoded path into the
+    gitignored ``outputs/`` tree — so "generic" silently meant *the author's
+    Na22 biexp fit* on the author's machine and a true generic kernel on
+    everyone else's, while the manifest recorded ``source="generic"`` in both
+    cases. Same run, same manifest, different response function per machine.
+
+    Now the generic path really is generic: return no per-branch templates and
+    let ``_process_event`` use ``FALLBACK_TEMPLATE`` for every branch.
+    """
+    fit_csv = getattr(args, "fit_csv", None)
+    if not fit_csv:
+        print("[template] generic kernel for every branch "
+              "(no per-channel SPE CSV resolved).")
+        return {}
+    return _legacy_load_channel_templates(Path(fit_csv))
+
+
+def _entry_filter(args, events):
+    """Apply `--entry-list` (a set of entry indices) to an EventRecord
+    stream; pass-through when unset."""
+    path = getattr(args, "entry_list", None)
+    if not path:
+        yield from events
+        return
+    from pmtdeconv.pipeline.event_source import load_entry_list
+    keep = load_entry_list(path)
+    print(f"  entry-list filter: {len(keep)} entries from {path}")
+    for rec in events:
+        if rec.entry in keep:
+            yield rec
 
 
 def process_run_object(args, diagnostic_sink=None):
@@ -83,8 +138,7 @@ def process_run_object(args, diagnostic_sink=None):
                    / f"deconv_pulse_object_lab_cosine_wavelet{args.out_suffix}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ch_templates = _legacy_load_channel_templates(
-        Path(args.fit_csv) if args.fit_csv else FIT_CSV_DEFAULT)
+    ch_templates = _templates_for_run(args)
 
     print(f"Runs: {args.runs}  (object format)")
     print(f"Sample interval: dt_ns = {dt_ns}  ({1.0/dt_ns:.3f} GSa/s)")
@@ -126,7 +180,7 @@ def process_run_object(args, diagnostic_sink=None):
                 tree_name=tree_name,
             )
 
-    results = run_hits(_events(), args=args, profile=WAVELET_PROFILE,
+    results = run_hits(_entry_filter(args, _events()), args=args, profile=_hits_profile(args, "wavelet"),
                        templates=ch_templates, cosine_cutoff_mhz=cosine_cutoff_mhz,
                        sink=sink)
     tables = write_deconv_pulse_result_tables(results, out_dir)
@@ -154,6 +208,8 @@ def process_run(args, diagnostic_sink=None):
 
     entry_stop = args.entry_stop
     step_size = 500
+    # Wavelet-path fallback is 450 MHz vs the STFT path's 100 — see the
+    # benchmark-confound note in process_run_stft.
     cosine_cutoff_mhz = float(getattr(args, "cosine_cutoff_mhz", None) or 450.0)
 
     explicit_data_root = getattr(args, "data_root", None)
@@ -170,8 +226,7 @@ def process_run(args, diagnostic_sink=None):
                    / f"deconv_pulse_Na22_lab_cosine_wavelet{args.out_suffix}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ch_templates = _legacy_load_channel_templates(
-        Path(args.fit_csv) if args.fit_csv else FIT_CSV_DEFAULT)
+    ch_templates = _templates_for_run(args)
 
     print(f"Runs: {args.runs}")
     print(f"Sample interval: dt_ns = {dt_ns}  ({1.0/dt_ns:.3f} GSa/s)")
@@ -194,7 +249,7 @@ def process_run(args, diagnostic_sink=None):
                 step_size=step_size,
             )
 
-    results = run_hits(_events(), args=args, profile=WAVELET_PROFILE,
+    results = run_hits(_entry_filter(args, _events()), args=args, profile=_hits_profile(args, "wavelet"),
                        templates=ch_templates, cosine_cutoff_mhz=cosine_cutoff_mhz,
                        sink=sink)
     tables = write_deconv_pulse_result_tables(results, out_dir)
@@ -226,6 +281,10 @@ def process_run_stft(args, diagnostic_sink=None):
     entry_stop = args.entry_stop
     step_size = 500
     # STFT path historically uses 100 MHz (narrower than the wavelet 450).
+    # BENCHMARK CONFOUND: this fallback divergence means a bare
+    # `hits --denoiser stft` vs `hits --denoiser wavelet` differs in the
+    # deconvolution filter, not just the denoiser — any fair comparison must
+    # pass an explicit --cosine-cutoff-mhz (the benchmark harness does).
     cosine_cutoff_mhz = float(getattr(args, "cosine_cutoff_mhz", None) or 100.0)
     stft_freq_cutoff_hz = getattr(args, "stft_freq_cutoff_mhz", 175.0) * 1e6
     stft_nperseg_ns = getattr(args, "stft_nperseg_ns", 20.0)
@@ -245,10 +304,11 @@ def process_run_stft(args, diagnostic_sink=None):
         data_subdir = getattr(args, "data_subdir", None) or "Na22_lab"
         data_dir = Path(DATA_DIR_DEFAULT) / data_subdir
 
-    ch_templates = load_template(
-        Path(args.fit_csv) if args.fit_csv else FIT_CSV_DEFAULT,
-        strict=False, verbose=True)
+    ch_templates = _templates_for_run(args)
     for branch, tmpl in ch_templates.items():
+        if tmpl.get("kind") == "sampled":
+            print(f"  {branch}: sampled kernel ({len(tmpl['y'])} samples)")
+            continue
         print(f"  {branch}: τ_rise={tmpl['tau_rise']:.3f} ns, "
               f"τ_fall={tmpl['tau_fall']:.3f} ns, σ={tmpl['sigma']:.3f} ns")
 
@@ -268,7 +328,7 @@ def process_run_stft(args, diagnostic_sink=None):
                 step_size=step_size,
             )
 
-    results = run_hits(_events(), args=args, profile=STFT_PROFILE,
+    results = run_hits(_entry_filter(args, _events()), args=args, profile=_hits_profile(args, "stft"),
                        templates=ch_templates, cosine_cutoff_mhz=cosine_cutoff_mhz,
                        sink=sink)
     tables = write_deconv_pulse_result_tables(results, out_dir)
