@@ -212,3 +212,30 @@ def test_plot_energy_raw_check_follows_the_kernel_delay():
     kept = _qualifying_charge(u, raw, 0.0, 1.0, 5, dt, delay, n)[1]
     unshifted = _qualifying_charge(u, raw, 0.0, 1.0, 5, dt, 0, n)[1]
     assert (kept, unshifted) == (1, 0)
+
+
+def test_hits_wavelet_adds_no_edge_peaks_before_a_late_pulse(tmp_path):
+    import uproot
+    from pmtdeconv.core.kernels import build_spe_template
+    from pmtdeconv.io.templates import load_template
+    from pmtdeconv.presets.datasets import CD109_STACKED_UNLOCKED_CSV
+    n, dt = 1024, 0.5051
+    k = build_spe_template(n, dt, load_template(CD109_STACKED_UNLOCKED_CSV)["d0_ch1"])
+    k /= k.max()
+    rng = np.random.default_rng(3)
+    t = np.arange(n) * dt
+    waves = []
+    for _ in range(40):
+        late = rng.uniform(380, 480)
+        pulse = np.roll(k, int(late / dt) - int(np.argmax(k))) * (t >= late - 60)
+        waves.append((rng.uniform(40, 120) * pulse + rng.normal(0, 1.0, n)).astype(np.float32))
+    with uproot.recreate(tmp_path / "flattened_Run0.root") as f:
+        f.mktree("waveforms", {"d0_ch1": np.dtype((np.float32, n))})
+        f["waveforms"].extend({"d0_ch1": np.array(waves)})
+    out = tmp_path / "out"
+    assert cli.main(["hits", "--dataset", "na22", "--data-root", str(tmp_path), "--runs", "0",
+                     "--branches", "d0_ch1", "--denoiser", "wavelet", "--no-vetoes",
+                     "--out-dir", str(out)]) == 0
+    found = pd.read_csv(out / "all_results.csv")
+    early = found[(found.success == True) & (found.t_peak < 30)].entry.nunique()  # noqa: E712
+    assert early <= 4, f"{early}/40 events have a peak in the first 30 ns (no pulse there)"
