@@ -206,6 +206,11 @@ tests compare against — so the instructions cannot drift from the suite.
 
 ### Getting the data
 
+Starting from raw DRS scope binaries (`Run<N>.dat`)? The companion package
+`data_processing/` (`pmtdeconv-dataprep`, CLI `dataprep`) turns them into the
+`Run<N>.root` and `flattened_Run<N>.root` files below. It needs PyROOT, so it
+is installed separately; see `data_processing/README.md`.
+
 The ROOT files are **not** in this repository — they are far too large, and
 they are not yours to redistribute. They live in the group's internal share:
 
