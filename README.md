@@ -1127,3 +1127,15 @@ regression: fix the code rather than blessing over it.
 - `numpy`, `scipy`, `pandas`, `matplotlib`
 - `uproot`, `awkward` (ROOT file I/O)
 - `pywavelets` (wavelet denoising — `core.dsp.wavelet_denoise`)
+
+## Credits
+
+- **DRS binary decoding** (`data_processing/dataprep/drs/`): the
+  `processMultiBoardBinary_v9.py` and `utils_v9.py` scripts are taken
+  verbatim from [drsProcessing](https://github.com/mcitron/drsProcessing)
+  (commit `0b1edca`) by Matthew Citron and the drsProcessing contributors,
+  and are included with the author's permission. Provenance:
+  `data_processing/dataprep/drs/NOTICE.md`.
+- **Tang et al. 2024** ([arXiv:2411.07620](https://arxiv.org/abs/2411.07620)):
+  the STFT deconvolution method and simulation reproduced by `sim tang2024` and
+  the `tang2024` benchmark arms.
