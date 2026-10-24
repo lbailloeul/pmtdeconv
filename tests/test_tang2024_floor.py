@@ -109,18 +109,20 @@ class TestPipelineConsumption:
         assert df["in_regime"].mean() > 0.95
 
 
+@pytest.fixture(scope="module")
+def fft_csv(sim_dir, tmp_path_factory):
+    """Hits from the plain-FFT arm, shared by TestChargeReproduction."""
+    out = tmp_path_factory.mktemp("fft_arm")
+    _run_hits(sim_dir, out, 0, "--denoiser", "none",
+              "--cosine-cutoff-mhz", "200")
+    return out / "all_results.csv"
+
+
 class TestChargeReproduction:
     """The paper's fig-14 headline on the plain-FFT arm (their previous
     method ≈ 200 MHz cosine): mean rec/true ≈ 1.004. Floors margined from
     the 2026-07-29 measurement (400 events: mean 0.962, std 0.220,
     nonlinearity 0.139)."""
-
-    @pytest.fixture(scope="class")
-    def fft_csv(self, sim_dir, tmp_path_factory):
-        out = tmp_path_factory.mktemp("fft_arm")
-        _run_hits(sim_dir, out, 0, "--denoiser", "none",
-                  "--cosine-cutoff-mhz", "200")
-        return out / "all_results.csv"
 
     def test_ratio_mean_near_unity(self, fft_csv, sim_dir):
         r = per_event_charge_ratio(fft_csv,

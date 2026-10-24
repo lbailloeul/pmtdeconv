@@ -137,7 +137,7 @@ def test_waveform_golden(tmp_path, synth_root_exists):
     committed golden CSV byte-for-byte."""
     out_dir = tmp_path / "waveform"
     _run_pmtdeconv("area",
-                   "--dataset", "na22",
+                   "--dataset", "na22", "--cosine-cutoff-mhz", "450",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "0",
                    out_dir=out_dir)
@@ -183,8 +183,10 @@ def test_pulse_vetoon_golden(tmp_path, synth_root_exists):
     survive).
     """
     out_dir = tmp_path / "pulse_vetoon"
-    _run_pmtdeconv("hits",
-                   "--dataset", "na22",
+    # --denoiser wavelet pinned since 2026-10 (STFT became the default):
+    # this golden locks the WAVELET veto path; the STFT one is its own golden.
+    _run_pmtdeconv("hits", "--denoiser", "wavelet",
+                   "--dataset", "na22", "--cosine-cutoff-mhz", "450",
                    "--vetoes",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "0",
@@ -208,8 +210,10 @@ def test_pulse_stft_golden(tmp_path, synth_root_exists):
     byte-identical.
     """
     out_dir = tmp_path / "pulse_stft"
-    _run_pmtdeconv("hits", "--denoiser", "stft",
-                   "--dataset", "na22",
+    # --stft-amp-threshold 10 pinned: the golden was blessed at the pre-2026-10
+    # default; the new default (5) is covered by the object-STFT golden.
+    _run_pmtdeconv("hits", "--denoiser", "stft", "--stft-amp-threshold", "10",
+                   "--dataset", "na22", "--cosine-cutoff-mhz", "450",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "0",
                    out_dir=out_dir)
@@ -218,25 +222,17 @@ def test_pulse_stft_golden(tmp_path, synth_root_exists):
     _diff_csv_byte_identical(produced, golden)
 
 
-def test_waveform_fftpad_golden(tmp_path, synth_root_exists):
-    """`pmtdeconv waveform --fft-pad` against the synth fixture must match the
-    committed golden byte-for-byte.
-
-    Step-4 characterization (architecture restructure): the area path's
-    optional FFT zero-padding (``fft_pad`` -> next_pow2(2N) kernel/filter
-    variant) was byte-untested — the ``deconv_area_run0`` golden runs with
-    ``fft_pad=False``. This locks the padded path before the AreaMode rewrite
-    touches it. Output differs from ``deconv_area_run0.csv`` (padding changes
-    the deconvolution).
-    """
-    out_dir = tmp_path / "waveform_fftpad"
-    _run_pmtdeconv("area", "--fft-pad",
-                   "--dataset", "na22",
+def test_waveform_circular_golden(tmp_path, synth_root_exists):
+    """`pmtdeconv area --no-fft-pad` reproduces the pre-2026-10-21 circular
+    area bytes; the padded default is locked by ``deconv_area_run0``."""
+    out_dir = tmp_path / "waveform_circular"
+    _run_pmtdeconv("area", "--no-fft-pad",
+                   "--dataset", "na22", "--cosine-cutoff-mhz", "450",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "0",
                    out_dir=out_dir)
     produced = out_dir / "areas_run0.csv"
-    golden = GOLDEN_DIR / "deconv_area_fftpad_run0.csv"
+    golden = GOLDEN_DIR / "deconv_area_circular_run0.csv"
     _diff_csv_byte_identical(produced, golden)
 
 
@@ -304,7 +300,7 @@ def test_pulse_object_golden(tmp_path, synth_object_exists):
     loudly for *new* untemplated runs.
     """
     out_dir = tmp_path / "object_pulse"
-    _run_pmtdeconv("hits",
+    _run_pmtdeconv("hits", "--denoiser", "wavelet",    # pinned, see vetoon
                    "--dataset", "lanl_835",
                    "--data-root", str(FIXTURE_DIR),
                    "--runs", "99",
@@ -316,6 +312,26 @@ def test_pulse_object_golden(tmp_path, synth_object_exists):
     _diff_csv_byte_identical(produced, golden)
     # The byte-identical `deconv_pulses.csv` copy was dropped 2026-09-14.
     assert not (out_dir / "deconv_pulses.csv").exists()
+
+
+def test_pulse_object_stft_golden(tmp_path, synth_object_exists):
+    """Object-format (LANL) files through the STFT denoiser.
+
+    Until 2026-10 STFT was flat-only: an object-format dataset with
+    ``--denoiser stft`` fell into the flat reader. STFT became the default
+    then, so object files now run it through ``process_run_object``; this
+    golden locks that path.
+    """
+    out_dir = tmp_path / "object_pulse_stft"
+    _run_pmtdeconv("hits", "--denoiser", "stft",
+                   "--dataset", "lanl_835",
+                   "--data-root", str(FIXTURE_DIR),
+                   "--runs", "99",
+                   "--no-vetoes",
+                   "--allow-generic-fallback",
+                   out_dir=out_dir)
+    _diff_csv_byte_identical(out_dir / "hits.csv",
+                             GOLDEN_DIR / "object_deconv_pulses_stft_run99.csv")
 
 
 # ─── DRSprocessing-format golden (step 8 test-gap fill) ──────────

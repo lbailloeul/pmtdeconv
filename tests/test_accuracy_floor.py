@@ -10,19 +10,21 @@ only by byte drift.
 
 Tolerances were measured on the current pipeline (2026-06, 80-event fixtures)
 and set with ~2-3x margin so they catch gross regressions without flaking on
-RNG. Measured baselines, for reference:
+RNG. Since 2026-10 the `hits` default denoiser is STFT (amplitude threshold
+5); every floor here holds for it (the table below is the 2026-06 wavelet
+measurement). Measured baselines, for reference:
 
     regime   AREA charge scatter / eff      HITS primary-peak timing
     level3   0.04 / 1.00                    sigma 0.45 ns  (clean)
     noisy    0.14 / 1.00                    sigma ~100 ns  (SNR wall — untested)
     level1   0.06 / 0.94                    sigma ~93 ns   (SNR wall — untested)
-    level5   0.05 / 1.00                    sigma 0.60 ns  (timing survives sat)
+    level5   0.05 / 1.00                    sigma 0.60 ns  (pre-2026-10-23, clipped kept)
     pileup   —                              96% pulses found, sigma 0.71 ns
 
 KEY scientific facts these lock in:
-  * whole-waveform AREA charge is robust to noise AND saturation;
-  * hits TIMING is excellent at high SNR and survives saturation (the basis of
-    the timewalk analysis), but degrades on low-SNR single pulses;
+  * whole-waveform AREA charge is robust to noise (clipped waveforms are
+    dropped before deconvolution since 2026-10-23);
+  * hits TIMING is excellent at high SNR but degrades on low-SNR single pulses;
   * the deconvolution genuinely RESOLVES overlapping pulses in time.
 """
 from __future__ import annotations
@@ -48,7 +50,6 @@ from pmtdeconv.io.truth import load_truth  # noqa: E402
 
 
 def _primary_timing_residuals(pulse_csv: Path, truth_csv: Path,
-                              include_saturated: bool = False,
                               time_col: str = "t_peak") -> np.ndarray:
     """Per-(event, branch) residual <time_col>(primary) - true_center_ns.
 
@@ -58,7 +59,7 @@ def _primary_timing_residuals(pulse_csv: Path, truth_csv: Path,
     exactly what a Gaussian-fit timewalk analysis ignores.
     """
     truth = load_truth(truth_csv)
-    if not include_saturated and "saturated" in truth.columns:
+    if "saturated" in truth.columns:
         truth = truth[~truth["saturated"]]
     prod = pd.read_csv(pulse_csv)
     if "peak_id" in prod.columns:
@@ -133,11 +134,17 @@ def test_area_charge_degrades_gracefully_under_noise(regime_root, tmp_path):
          "--data-root", str(rd), "--runs", "0")
     m = score_run(tmp_path / "a" / "areas_run0.csv",
                   rd / "flattened_Run0.truth.csv", mode="area")
-    assert m["efficiency"] >= 0.90, m
-    assert m["charge_scatter"] < 0.30, m            # measured 0.14
+    # Padded (2026-10-21) measures 0.856; circular measured 1.00 only because
+    # the wavelet's wrap averaged the window start with its negative end. The
+    # remaining losses are low-SNR left_edge vetoes; real 65213 keeps MORE
+    # photopeak events padded (3393 recovered vs 1181 tiny-area dropped).
+    assert m["efficiency"] >= 0.85, m
+    assert m["charge_scatter"] < 0.30, m            # measured 0.13
 
 
-def test_area_charge_robust_to_saturation(regime_root, tmp_path):
+def test_area_charge_on_tall_unclipped_pulses(regime_root, tmp_path):
+    """level5's clipped waveforms are dropped (test_spe_scope.py); the tall
+    pulses that stay under the rail must still integrate accurately."""
     rd = regime_root / "level5"
     _run(tmp_path / "a", "area", "--dataset", "na22",
          "--data-root", str(rd), "--runs", "0")
@@ -165,30 +172,13 @@ def test_hits_timing_floor_clean(regime_root, tmp_path):
     assert np.median(np.abs(resid)) < 1.5, np.median(np.abs(resid))
 
 
-def test_hits_timing_survives_saturation(regime_root, tmp_path):
-    """Clipped pulses keep good edge timing — the premise of S5 (saturation =
-    a charge defect, not a timing defect). Saturated truth rows are INCLUDED
-    here on purpose."""
-    rd = regime_root / "level5"
-    _run(tmp_path / "h", "hits", "--dataset", "na22",
-         "--data-root", str(rd), "--runs", "0", "--no-vetoes")
-    resid = _primary_timing_residuals(
-        tmp_path / "h" / "hits.csv", rd / "flattened_Run0.truth.csv",
-        include_saturated=True)
-    assert len(resid) > 0
-    frac_tight = float(np.mean(np.abs(resid) < 3.0))
-    assert frac_tight >= 0.80, f"only {frac_tight:.2f} of pulses within 3 ns"
-    assert np.median(np.abs(resid)) < 1.5, np.median(np.abs(resid))
-
-
-def test_hits_thalf_low_jitter_and_saturation_robust(regime_root, tmp_path):
+def test_hits_thalf_low_jitter(regime_root, tmp_path):
     """The t_half column (CFD-50 rising-edge crossing, MQAna `halftime`):
 
     * it sits ON THE RISING EDGE, so it is systematically EARLIER than the
       pulse center (negative median residual) with a tight core;
-    * — the timewalk/S5 premise — its core jitter SURVIVES saturation: the
-      rising edge is unclipped, so t_half stays tight where the apex-argmax
-      t_peak degrades.
+    * its core stays tight on level5's tall pulses (clipped ones are dropped
+      before deconvolution since 2026-10-23).
 
     Run with --peak-order first (the intended half-time pairing). Measured
     2026-07-01 (80-event fixtures): level3 median -3.6 ns / MAD-σ 0.77 ns;
@@ -209,11 +199,10 @@ def test_hits_thalf_low_jitter_and_saturation_robust(regime_root, tmp_path):
     assert -8.0 < np.median(resid3) < 0.0, np.median(resid3)
     assert _mad_sigma(resid3) < 2.0, _mad_sigma(resid3)   # measured 0.77
 
-    # level5 (saturation included): the core must STAY tight
+    # level5 tall unclipped pulses: the core must STAY tight
     truth5 = regime_root / "level5" / "flattened_Run0.truth.csv"
     resid5 = _primary_timing_residuals(
-        tmp_path / "h5" / "hits.csv", truth5,
-        include_saturated=True, time_col="t_half")
+        tmp_path / "h5" / "hits.csv", truth5, time_col="t_half")
     assert len(resid5) > 0
     assert _mad_sigma(resid5) < 1.5, _mad_sigma(resid5)   # measured 0.39
 
@@ -225,18 +214,24 @@ def test_hits_thalf_low_jitter_and_saturation_robust(regime_root, tmp_path):
 
 # ─── pile-up: the deconvolution's headline capability ───────────────
 
-def test_pileup_separation(regime_root, tmp_path):
+@pytest.mark.parametrize("denoiser", ["stft", "wavelet"])
+def test_pileup_separation(regime_root, tmp_path, denoiser):
     """2-3 overlapping pulses (5-30 ns apart): the deconvolution must FIND
     most of them and time the matched ones tightly. Per-pulse charge in
     overlap is genuinely unreliable, so it is NOT asserted here.
 
     2026-07-28: rewired through the promoted library matcher
     (``scoring.match_pulses``) so this floor also guards the promotion —
-    same greedy algorithm, same 15 ns tolerance, same floors."""
+    same greedy algorithm, same 15 ns tolerance.
+
+    2026-10: run for both denoisers (STFT became the default) and timed
+    robustly, per this file's convention — the plain std was dominated by a
+    few mistimed matches. Measured (80 events): STFT found 0.990, core
+    MAD-σ 0.53 ns, 3.6% beyond 5 ns; wavelet 0.965, 0.46 ns, 1.0%."""
     from pmtdeconv.pipeline.scoring import match_pulses
     rd = regime_root / "pileup"
     truth = pd.read_csv(rd / "flattened_Run0.truth.csv")
-    _run(tmp_path / "h", "hits", "--dataset", "na22",
+    _run(tmp_path / "h", "hits", "--dataset", "na22", "--denoiser", denoiser,
          "--data-root", str(rd), "--runs", "0", "--no-vetoes")
     found = pd.read_csv(tmp_path / "h" / "all_results.csv")
     if "success" in found.columns:
@@ -254,14 +249,23 @@ def test_pileup_separation(regime_root, tmp_path):
         dt_resid.extend(m["residuals_ns"].tolist())
 
     match_rate = matched / max(n_true, 1)
-    assert match_rate > 0.85, f"only {match_rate:.2f} of pile-up pulses found"
-    assert np.std(dt_resid) < 2.0, f"matched timing sigma {np.std(dt_resid):.2f} ns"
+    # 0.80 since the na22 default dropped 450 -> 75 MHz (2026-10-23): measured
+    # 0.84 at 75 (0.99 at 450); pulses 5-30 ns apart merge below ~100 MHz.
+    assert match_rate > 0.80, f"only {match_rate:.2f} of pile-up pulses found"
+    resid = np.asarray(dt_resid)
+    assert _mad_sigma(resid) < 1.0, f"core timing sigma {_mad_sigma(resid):.2f} ns"
+    mistimed = float(np.mean(np.abs(resid) > 5.0))
+    assert mistimed < 0.08, f"{mistimed:.1%} of matched pulses mistimed by >5 ns"
 
 
 def test_pileup_lowpe_multi_scoring(regime_root, tmp_path):
     """The 0–20 PE target population: low-PE multi-hit bunches, scored with
     the per-pulse ``hits-multi`` mode (auto-selected on pulse_id truth).
-    Floors measured 2026-07-28 then margined (loose by convention)."""
+    Floors measured 2026-07-28 then margined (loose by convention).
+
+    2026-10: efficiency and charge floors raised for the default (STFT,
+    amplitude threshold 5; measured eff 0.934, charge 0.980). They catch a
+    return to the old threshold 10, which found 65% at charge 0.76."""
     from pmtdeconv.pipeline.scoring import score_run
     rd = regime_root / "pileup_lowpe"
     _run(tmp_path / "h", "hits", "--dataset", "na22",
@@ -270,12 +274,13 @@ def test_pileup_lowpe_multi_scoring(regime_root, tmp_path):
                   rd / "flattened_Run0.truth.csv", mode="hits")
     # auto-upgrade must have engaged (pulse_id in the truth)
     assert "split_rate" in s and np.isfinite(s["efficiency"])
-    assert s["efficiency"] > 0.60, s
+    assert s["efficiency"] > 0.80, s
     assert s["timing_sigma_ns"] < 2.0, s
     assert s["merge_rate"] < 0.35, s
-    # absolute per-pulse charge scale within 40% of unity (overlap-degraded,
-    # loose floor — the benchmark reports the precise number)
-    assert 0.6 < s["charge_ratio_mean"] < 1.4, s
+    # per-pulse charge scale near unity (overlap-degraded; the benchmark
+    # reports the precise number). Upper bound 1.30 since the 75 MHz na22
+    # default: merged neighbours lift the mean to 1.22 (median 1.01).
+    assert 0.85 < s["charge_ratio_mean"] < 1.30, s
 
 
 if __name__ == "__main__":

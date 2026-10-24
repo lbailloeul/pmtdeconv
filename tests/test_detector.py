@@ -29,9 +29,10 @@ def _detector(**kw) -> Detector:
     return Detector.from_settings(settings, prov, mode="hits")
 
 
-def test_na22_wavelet_detector_matches_legacy_literals():
-    det = _detector(dataset="na22")
-    assert det.cosine_cutoff_mhz == 450.0
+def test_na22_wavelet_detector_takes_dataset_and_wavelet_defaults():
+    # wavelet named explicitly: STFT is the default since 2026-10.
+    det = _detector(dataset="na22", denoiser="wavelet")
+    assert det.cosine_cutoff_mhz == 75.0
     assert det.polarity == 1
     assert det.denoiser == "wavelet"
     assert det.no_denoise is False
@@ -47,11 +48,10 @@ def test_na22_wavelet_detector_matches_legacy_literals():
 
 
 def test_na22_stft_keeps_dataset_cutoff_not_100():
-    # The STFT golden uses na22's 450 MHz cosine cutoff (NOT the STFT
-    # god-module's hardcoded 100 MHz default) — regression guard.
+    # STFT takes na22's dataset cutoff (75 MHz), NOT the 100 MHz fallback.
     det = _detector(dataset="na22", denoiser="stft")
     assert det.denoiser == "stft"
-    assert det.cosine_cutoff_mhz == 450.0
+    assert det.cosine_cutoff_mhz == 75.0
 
 
 def test_na22_none_denoiser():
@@ -74,13 +74,13 @@ def test_lanl_object_format_carries_through():
     assert det.format == "object"
     assert det.polarity == -1
     assert det.tree == "Events"
-    # object dt_ns=="auto" -> placeholder until the command resolves per-file
-    assert isinstance(det.dt_ns, float)
+    # object dt_ns=="auto" -> None: the reader reads dt from each run file
+    assert det.dt_ns is None
 
 
-def test_runs_default_preserved():
+def test_missing_runs_stay_empty():
     det = _detector(dataset="na22")
-    assert det.runs == [65213]
+    assert det.runs == []
 
 
 def test_profile_literals_unchanged_canary():

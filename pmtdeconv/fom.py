@@ -167,6 +167,3 @@ def get_fom(name: str) -> Callable[..., dict]:
         raise KeyError(f"Unknown FoM {name!r}. Known: {', '.join(FOMS)}")
     return FOMS[name]
 
-
-def list_foms() -> list:
-    return list(FOMS)

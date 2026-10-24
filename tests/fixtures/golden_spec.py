@@ -51,6 +51,8 @@ class GoldenCase:
 
 CASES: List[GoldenCase] = [
     # ── flat format (flattened_Run0.root) ──────────────────────────────
+    # Deconvolving na22 cases pin 450 MHz: the legacy cutoff these bytes
+    # were blessed at (the na22 default became 75 MHz on 2026-10-23).
     GoldenCase(
         golden="area_mqana_run0.csv", fixture="flat",
         argv=["raw-area", "mqana", "--dataset", "na22",
@@ -60,17 +62,17 @@ CASES: List[GoldenCase] = [
     ),
     GoldenCase(
         golden="deconv_area_run0.csv", fixture="flat",
-        argv=["area", "--dataset", "na22",
+        argv=["area", "--dataset", "na22", "--cosine-cutoff-mhz", "450",
               "--data-root", "{FIXTURES}", "--runs", "0"],
         produced="areas_run0.csv",
-        note="Whole-waveform deconvolved area (unpadded / circular).",
+        note="Whole-waveform deconvolved area (linear / zero-padded default).",
     ),
     GoldenCase(
-        golden="deconv_area_fftpad_run0.csv", fixture="flat",
-        argv=["area", "--fft-pad", "--dataset", "na22",
+        golden="deconv_area_circular_run0.csv", fixture="flat",
+        argv=["area", "--no-fft-pad", "--dataset", "na22", "--cosine-cutoff-mhz", "450",
               "--data-root", "{FIXTURES}", "--runs", "0"],
         produced="areas_run0.csv",
-        note="Area path with linear (zero-padded) deconvolution.",
+        note="Area path with circular (unpadded) deconvolution.",
     ),
     GoldenCase(
         golden="deconv_pulses_run0.csv", fixture="flat",
@@ -82,15 +84,15 @@ CASES: List[GoldenCase] = [
     ),
     GoldenCase(
         golden="deconv_pulses_vetoon_run0.csv", fixture="flat",
-        argv=["hits", "--dataset", "na22", "--vetoes",
+        argv=["hits", "--denoiser", "wavelet", "--dataset", "na22", "--cosine-cutoff-mhz", "450", "--vetoes",
               "--data-root", "{FIXTURES}", "--runs", "0"],
         produced="all_results.csv",
         note="Every peak + its veto reason — locks each veto DECISION.",
     ),
     GoldenCase(
         golden="deconv_pulses_stft_run0.csv", fixture="flat",
-        argv=["hits", "--denoiser", "stft", "--dataset", "na22",
-              "--data-root", "{FIXTURES}", "--runs", "0"],
+        argv=["hits", "--denoiser", "stft", "--stft-amp-threshold", "10",
+              "--dataset", "na22", "--cosine-cutoff-mhz", "450", "--data-root", "{FIXTURES}", "--runs", "0"],
         produced="all_results.csv",
         note="STFT profile: relaxed veto constants + loose baseline gate.",
     ),
@@ -111,11 +113,19 @@ CASES: List[GoldenCase] = [
     ),
     GoldenCase(
         golden="object_deconv_pulses_run99.csv", fixture="object",
-        argv=["hits", "--dataset", "lanl_835",
+        argv=["hits", "--denoiser", "wavelet", "--dataset", "lanl_835",
               "--data-root", "{FIXTURES}", "--runs", "99",
               "--no-vetoes", "--allow-generic-fallback"],
         produced="hits.csv",
-        note="Object hits path on the generic fallback template.",
+        note="Object hits path on the generic fallback template (wavelet).",
+    ),
+    GoldenCase(
+        golden="object_deconv_pulses_stft_run99.csv", fixture="object",
+        argv=["hits", "--denoiser", "stft", "--dataset", "lanl_835",
+              "--data-root", "{FIXTURES}", "--runs", "99",
+              "--no-vetoes", "--allow-generic-fallback"],
+        produced="hits.csv",
+        note="Object hits path through STFT (object STFT added 2026-10).",
     ),
     # ── DRSprocessing format (processed/Run0.root) ─────────────────────
     GoldenCase(

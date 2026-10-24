@@ -4,6 +4,9 @@ Delegates to ``pipeline.template_build_impl.main``. Since 2026-07-02 the
 build config comes from the ONE dataset registry (``presets/datasets.py`` +
 YAML cards) via ``template_build_impl.config_from_preset`` — so any
 ``--dataset`` name (or card path) that works for ``hits`` works here too.
+Omit ``--dataset`` to build every dataset in the registry. The per-file
+templates are then aggregated per channel automatically (since 2026-10;
+``--no-aggregate`` stops after the per-file step).
 Previously this module kept a hand-maintained alias map onto the impl's own
 parallel 8-entry registry and monkey-patched its module globals; new
 datasets could not be template-built without editing that legacy list.
@@ -26,9 +29,10 @@ from pmtdeconv.presets import resolve_settings
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     g = parser.add_argument_group("template build")
-    g.add_argument("--all", dest="all_datasets", action="store_true",
-                   help="Iterate every dataset in the registry (also the "
-                        "behavior when --dataset is omitted).")
+    g.add_argument("--no-aggregate", action="store_true",
+                   help="Stop after the per-file templates; skip the "
+                        "per-channel aggregation (`template aggregate` "
+                        "can run it later).")
     g.add_argument("--no-single-peak", action="store_true",
                    help="Disable the default single-peak veto and stack every "
                         "band-selected waveform (legacy behavior). Templates "
@@ -115,6 +119,11 @@ def run(args: argparse.Namespace) -> int:
         {"role": "spe_templates_perfile_csv",
          "path": str(out_dir / "spe_templates_perfile.csv")},
     ]
+    if not getattr(args, "no_aggregate", False):
+        from pmtdeconv.commands.template_aggregate import aggregate
+        print("Aggregating per-file templates per channel "
+              "(--no-aggregate to skip)")
+        outputs_meta += aggregate(out_dir)
     manifest_path = (Path(settings.manifest_path)
                      if settings.manifest_path else (out_dir / "manifest.json"))
     write_manifest(

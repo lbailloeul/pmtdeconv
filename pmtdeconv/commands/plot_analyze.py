@@ -1,9 +1,8 @@
-"""``pmtdeconv plot analyze`` — diagnostic plots from a deconv-pulse CSV.
+"""``pmtdeconv plot analyze`` — diagnostic plots from a hits CSV.
 
-Delegates to ``deconvolution/analyze_deconv.py`` which has its own
-preset registry (milliqan, run1000, na22, na22_wavelet) and renders
-charge histograms / charge-vs-time / ch1-vs-ch2 plots. Passes through
-the legacy script's flags.
+Charge histogram, charge in a time window, charge vs peak height, charge vs
+time and the ch1-vs-ch2 charge scatter, one plot set per run, via
+:mod:`pmtdeconv.plotting.analyze`.
 """
 from __future__ import annotations
 
@@ -15,29 +14,22 @@ from pmtdeconv import PROJECT_ROOT
 from pmtdeconv.io.manifest import maybe_dry_run_exit, write_manifest
 from pmtdeconv.presets import resolve_settings
 
-
-# Legacy `analyze_deconv.py` --preset choices (separate from pmtdeconv's
-# ConfigPreset registry; the legacy preset just selects a CSV path +
-# axis labels). Exposed here for help text.
-_LEGACY_ANALYZE_PRESETS = ("milliqan", "run1000", "na22", "na22_wavelet")
+PLOTS = ("all", "charge", "charge_tcut", "charge_vs_height",
+         "charge_vs_time", "ch1_vs_ch2")
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     g = parser.add_argument_group("plot analyze")
-    g.add_argument("--analyze-preset", choices=_LEGACY_ANALYZE_PRESETS,
-                   default="na22_wavelet",
-                   help="Preset CSV selector inside analyze_deconv.py.")
-    g.add_argument("--csv", type=str, default=None,
-                   help="Override CSV path (skips the analyze-preset map).")
-    g.add_argument("--plot", type=str, nargs="+",
-                   default=["all"],
-                   help="Which plots to render. See analyze_deconv.py for "
-                        "the list (charge, charge_tcut, charge_vs_height, "
-                        "charge_vs_time, ch1_vs_ch2, all).")
+    g.add_argument("--hits-csv", dest="hits_csv", default=None, metavar="CSV",
+                   help="hits.csv or all_results.csv written by `pmtdeconv hits`.")
+    from pmtdeconv.cli import add_renamed_alias
+    add_renamed_alias(g, "--csv", "--hits-csv", dest="hits_csv")
+    g.add_argument("--plot", nargs="+", choices=PLOTS, default=["all"],
+                   help="Which plots to render (default: all).")
 
 
-def _default_out_dir(settings, analyze_preset: str) -> Path:
-    parts = [f"plot_analyze_{settings.dataset or analyze_preset}"]
+def _default_out_dir(settings, hits_csv: Path) -> Path:
+    parts = [f"plot_analyze_{settings.dataset or hits_csv.parent.name}"]
     if settings.config_preset_name:
         parts.append("__" + settings.config_preset_name)
     if settings.out_suffix:
@@ -47,10 +39,17 @@ def _default_out_dir(settings, analyze_preset: str) -> Path:
 
 def run(args: argparse.Namespace) -> int:
     t0 = time.time()
+    if not args.hits_csv:
+        raise SystemExit(
+            "plot analyze needs --hits-csv <file> (a hits.csv from "
+            "`pmtdeconv hits`). Its presets, which pointed at old output "
+            "folders on one machine, were removed on 2026-09-23.")
+    hits_csv = Path(args.hits_csv)
+    if not hits_csv.exists():
+        raise SystemExit(f"--hits-csv not found: {hits_csv}")
     settings, provenance = resolve_settings(args, require_data_root=False)
 
-    out_dir = settings.out_dir or _default_out_dir(settings, args.analyze_preset)
-    out_dir = Path(out_dir)
+    out_dir = Path(settings.out_dir or _default_out_dir(settings, hits_csv))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if maybe_dry_run_exit(subcommand="plot analyze", settings=settings,
@@ -58,28 +57,14 @@ def run(args: argparse.Namespace) -> int:
                           duration_seconds=time.time() - t0):
         return 0
 
-    from pmtdeconv.plotting import analyze as legacy  # noqa
+    from pmtdeconv.plotting import analyze
 
-    if args.csv is not None:
-        input_csv = Path(args.csv)
-    else:
-        spec = legacy.PRESETS[args.analyze_preset]
-        input_csv = Path(spec["csv"])
-
-    if args.csv is not None:
-        output_paths = legacy._dispatch(
-            input_csv, input_csv.parent.name, channels=None, q_range=(None, None),
-            plots=args.plot, ipulse=None, t_cut=None,
-            dt_window=None, calib=None, emax=1500.0, split_runs=True,
-            output_dir=out_dir,
-        )
-    else:
-        output_paths = legacy._run_preset(
-            args.analyze_preset,
-            q_range=(None, None), plots=args.plot, ipulse=None,
-            chan_override=None, t_cut=None,
-            output_dir=out_dir,
-        )
+    output_paths = analyze._dispatch(
+        hits_csv, hits_csv.parent.name, channels=None, q_range=(None, None),
+        plots=args.plot, ipulse=None, t_cut=None,
+        dt_window=None, calib=None, emax=1500.0, split_runs=True,
+        output_dir=out_dir,
+    )
 
     outputs_meta = [
         {"role": "analyze_pdf", "path": str(p)}
@@ -91,11 +76,9 @@ def run(args: argparse.Namespace) -> int:
     write_manifest(
         subcommand="plot analyze",
         settings=settings, provenance=provenance,
-        inputs=[{"role": "pulse_csv", "path": str(input_csv)}],
+        inputs=[{"role": "pulse_csv", "path": str(hits_csv)}],
         outputs=outputs_meta,
-        stats={"analyze_preset": args.analyze_preset,
-               "plots": args.plot,
-               "n_outputs": len(outputs_meta)},
+        stats={"plots": args.plot, "n_outputs": len(outputs_meta)},
         out_path=manifest_path,
         duration_seconds=time.time() - t0,
         hash_inputs=settings.hash_inputs,

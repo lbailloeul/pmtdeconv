@@ -84,6 +84,18 @@ def run(args: argparse.Namespace) -> int:
 
     if len(args.chans) != len(args.branch_out):
         raise SystemExit("--chans and --branch-out must have the same length.")
+    no_waveform = [f for f, key in (("--polarity", "polarity"), ("--dt-ns", "dt_ns"))
+                   if provenance.get(key) == "cli"]
+    if no_waveform:
+        raise SystemExit(f"raw-area drs reads precomputed areas, so "
+                         f"{' and '.join(no_waveform)} cannot apply. Drop them, "
+                         f"or use `raw-area mqana` to integrate the waveforms.")
+    pairs = list(zip(args.chans, args.branch_out))
+    if settings.explicit_branches is not None:
+        pairs = [(ch, br) for ch, br in pairs if br in settings.explicit_branches]
+        if not pairs:
+            raise SystemExit(f"--branches {settings.explicit_branches} matches none "
+                             f"of --branch-out {args.branch_out}.")
 
     out_dir = settings.out_dir or raw_area_output_dir(settings, "drs")
     out_dir = Path(out_dir)
@@ -117,17 +129,17 @@ def run(args: argparse.Namespace) -> int:
 
         with uproot.open(root_path) as ufile:
             tree = ufile[tree_name]
-            n = tree.num_entries
+            n = min(tree.num_entries, settings.entry_stop or tree.num_entries)
             print(f"══ Run {run_num} ══")
             print(f"  Reading {n} entries from {root_path}::{tree_name}")
             branches = []
-            for ch in args.chans:
+            for ch, _ in pairs:
                 branches.append(f"area_{args.board}_{ch}")
                 branches.append(f"vMax_{args.board}_{ch}")
-            arrs = tree.arrays(branches, library="np")
+            arrs = tree.arrays(branches, library="np", entry_stop=n)
             entries = np.arange(n)
             rows = []
-            for ch, br in zip(args.chans, args.branch_out):
+            for ch, br in pairs:
                 a = arrs[f"area_{args.board}_{ch}"]
                 vm = arrs[f"vMax_{args.board}_{ch}"]
                 for ent, ar, h in zip(entries, a, vm):

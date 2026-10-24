@@ -108,8 +108,8 @@ def test_timing_sigma_module_and_clip():
 
 
 def test_fom_registry_lookup():
-    from pmtdeconv.fom import get_fom, list_foms, FOM_LOWER_IS_BETTER
-    assert "photopeak_sigma_over_mu" in list_foms()
+    from pmtdeconv.fom import FOMS, get_fom, FOM_LOWER_IS_BETTER
+    assert "photopeak_sigma_over_mu" in FOMS
     assert FOM_LOWER_IS_BETTER["timing_sigma"] is True
     assert callable(get_fom("photopeak_sigma_over_mu"))
     with pytest.raises(KeyError):

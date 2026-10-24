@@ -40,10 +40,13 @@ from pmtdeconv.io.schemas import AREA_COLUMNS
 from pmtdeconv.io.templates import load_template
 from pmtdeconv.io.truth import find_truth_for
 from pmtdeconv.pipeline.scoring import ScoringWeights, score_run
+from pmtdeconv.pipeline.template import (
+    add_generic_fallback_flag, configured_template_csv,
+)
 from pmtdeconv.presets import resolve_settings
 
 from pmtdeconv.commands._tune_shared import (
-    apply_drift_bias, closest_reference,
+    apply_drift_bias, area_denoiser, closest_reference,
     ensure_regime_fixture, regime_fixture,
     save_sweep_curves, write_tuned_presets,
 )
@@ -72,14 +75,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         "above @50, capped at 0.9*Nyquist for the dataset's "
                         "dt_ns).")
     g.add_argument("--charge-tol", type=float, default=0.02,
-                   help="ε-constraint tolerance for the charge-drift gate "
-                        "(default 0.02 = 2%%). A cutoff is only eligible if its "
-                        "charge scale stays within this fraction of the "
-                        "reference cutoff (charge fidelity is the hard "
-                        "constraint). Among the eligible cutoffs the winner is "
-                        "the LOWEST whose width + resolution tie the best "
-                        "(see --width-tol / --scatter-tol). Tighten to 0.01 for "
-                        "Daya-Bay-strict charge linearity.")
+                   help="Loose charge-drift gate (default 0.02 = 2%%). A cutoff "
+                        "is only eligible if its charge scale stays within this "
+                        "fraction of the reference cutoff. Among the eligible "
+                        "cutoffs the winner is picked by --min-efficiency, then "
+                        "--drift-band, then the thinnest reconstructed FWHM. "
+                        "Tighten to 0.01 for Daya-Bay-strict charge linearity.")
     g.add_argument("--min-efficiency", type=float, default=1.0,
                    help="EFFICIENCY PROTECTION (priority 1, default 1.0 = MAXIMIZE "
                         "efficiency): a cutoff is only eligible if its "
@@ -89,20 +90,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         "picks the thinnest pulse (and best resolution) among "
                         "them. LOWER it (e.g. 0.95) to permit trading a little "
                         "efficiency for a thinner pulse / higher cutoff.")
-    g.add_argument("--width-tol", type=float, default=0.10,
-                   help="Equivalence tolerance on reconstructed FWHM (default "
-                        "0.10 = 10%%). Among gated cutoffs the width plateaus; "
-                        "any cutoff whose FWHM is within this fraction of the "
-                        "minimum is treated as the SAME width. Of those, the "
-                        "LOWEST cutoff is chosen (more regularized / reliable, "
-                        "further from the noise cliff). Tighten toward 0 to "
-                        "demand a stricter width match (rides to higher cutoff).")
-    g.add_argument("--scatter-tol", type=float, default=0.20,
-                   help="Equivalence tolerance on charge resolution / scatter "
-                        "(default 0.20 = 20%%). Secondary guard: the chosen "
-                        "cutoff must also match the best charge resolution on "
-                        "the width plateau to within this fraction, so we never "
-                        "trade resolution for a lower cutoff.")
     g.add_argument("--drift-band", type=float, default=0.005,
                    help="Charge-drift target band (priority 2), as a fraction "
                         "(default 0.005 = 0.5%%). Among the MAX-efficiency "
@@ -112,13 +99,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         "— it is priority 1), the cutoff with the smallest "
                         "|drift| is used instead.")
     g.add_argument("--denoiser", choices=("none", "wavelet"),
-                   default="wavelet",
+                   default=None,
                    help="Q1 isolation flag: `none` runs deconv with NO "
                         "post-denoise (pure cosine sweep, isolates the "
                         "cutoff effect on charge). `wavelet` keeps the "
                         "default sym8/L5/hard/k=2.0 denoise applied.")
     g.add_argument("--template", type=str, default=None,
                    help="SPE template CSV path. Default: dataset's preset.")
+    add_generic_fallback_flag(g)
     g.add_argument("--write-presets", action="store_true",
                    help="Idempotently merge winning ConfigPresets into "
                         "pmtdeconv/presets/tuned_configs.py.")
@@ -167,6 +155,9 @@ def _default_out_dir(settings) -> Path:
 def run(args: argparse.Namespace) -> int:
     t0 = time.time()
     settings, provenance = resolve_settings(args, require_data_root=False)
+    denoiser_choice = area_denoiser(settings, provenance)
+    # A configured-but-missing template is an error (the rule hits applies).
+    template_csv = configured_template_csv(settings, provenance)
 
     out_dir = settings.out_dir or _default_out_dir(settings)
     out_dir = Path(out_dir)
@@ -184,24 +175,14 @@ def run(args: argparse.Namespace) -> int:
     n_events_override = args.n_events
     charge_tol = float(args.charge_tol)
     min_eff_frac = float(args.min_efficiency)
-    width_tol = float(args.width_tol)
-    scatter_tol = float(args.scatter_tol)
     drift_band = float(args.drift_band)
-    denoiser_choice = args.denoiser
     # Translate to process_run signature (wavelet="none" disables denoise)
     wavelet_arg = ("none" if denoiser_choice == "none"
                    else WAVELET_DEFAULT)
 
-    from pmtdeconv.pipeline.process_area import (
-        process_run, FALLBACK_TEMPLATE,
-    )
+    from pmtdeconv.pipeline.process_area import process_run
 
-    # strict=False: warn + fall back to FALLBACK_TEMPLATE when the configured
-    # template CSV is absent (e.g. a fresh clone with no built Cd109 template),
-    # mirroring the hits/area paths — a missing template should not hard-crash a
-    # synthetic-regime sweep.
-    templates = load_template(settings.template_csv, strict=False)
-    templates.setdefault("_default", FALLBACK_TEMPLATE)
+    templates = load_template(template_csv)
 
     weights = ScoringWeights()
     rows: List[dict] = []
@@ -233,7 +214,7 @@ def run(args: argparse.Namespace) -> int:
                 t_peak_min_ns=T_PEAK_MIN_NS_DEFAULT,
                 afterpulse_window_ns=0.0,
                 afterpulse_height_ratio=5.0,
-                fft_pad=False,
+                fft_pad=bool(settings.fft_pad),
                 wrap_ratio=0.5,
                 wrap_abs_k=0.0,
                 entry_stop=None,
@@ -282,23 +263,16 @@ def run(args: argparse.Namespace) -> int:
     sweep_df.to_csv(sweep_csv, index=False)
     print(f"\nSweep summary: {sweep_csv}")
 
-    # Winner per regime — ε-CONSTRAINT gate, then LOWEST-EQUIVALENT cutoff.
+    # Winner per regime — drift gate, then efficiency > drift band > width.
     #
     # ``charge_bias`` here is the charge-scale DRIFT vs the reference cutoff
     # (apply_drift_bias rewrote it above; the dataset preset's cutoff is the
     # reference and has drift≈0). The hard gate is "charge scale stays within
     # charge_tol of the reference" AND "efficiency ≥ floor".
     #
-    # Selection among the gated cells (changed 2026-06-01 per user pref):
-    # reconstructed FWHM *plateaus* with cutoff — once past the knee it barely
-    # moves, while a HIGHER cutoff is less reliable (closer to the deconv
-    # noise-amplification cliff). So rather than taking the global min FWHM
-    # (which rides up the plateau, and can even latch onto a low-efficiency
-    # noise spike with tiny width + huge scatter), we treat all cutoffs whose
-    # width AND charge resolution match the best achievable — within
-    # ``width_tol`` / ``scatter_tol`` — as equivalent, and pick the LOWEST
-    # such cutoff. One representative per cutoff = its best (lowest) scatter
-    # row, so multi-row noise cells can't pollute the width comparison.
+    # Selection among the gated cells: see PRIORITY ORDER below. One
+    # representative per cutoff = its best (lowest) scatter row, so multi-row
+    # noise cells can't pollute the width comparison.
     recipe: Dict[str, dict] = {}
     winner_axis: Dict[str, float] = {}
     for regime, sub in sweep_df.groupby("regime"):
@@ -405,7 +379,6 @@ def run(args: argparse.Namespace) -> int:
          "secondary_objective": ("among max-efficiency cutoffs, keep |drift| <= "
                                  "drift_band then minimize FWHM; if none reach "
                                  "the band, take the smallest |drift|"),
-         "width_tol": width_tol,
          "regimes": recipe}, indent=2))
     print(f"Recipe: {recipe_path}")
 

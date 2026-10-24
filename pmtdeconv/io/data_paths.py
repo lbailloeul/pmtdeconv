@@ -20,6 +20,7 @@ Two file kinds:
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -55,8 +56,23 @@ def _drs_candidates(data_root: Path, run) -> List[Path]:
     if data_root.is_dir():
         cands += sorted(data_root.glob(f"*/{name}"))
         cands += sorted(p for p in data_root.glob(f"*Run{run}*.root")
-                        if not p.name.startswith("flattened"))
+                        if not p.name.startswith("flattened")
+                        and names_run(p.name, run))
     return _dedup(cands)
+
+
+def names_run(name: str, run) -> bool:
+    """``run`` appears in ``name`` as a whole number: ``99`` matches
+    ``Run835.99_triple`` but ``83`` does not match ``Run835``."""
+    return re.search(rf"(?<!\d){re.escape(str(run))}(?!\d)", name) is not None
+
+
+def find_run_files(data_dir, file_glob: str, run) -> List[Path]:
+    """Files under ``data_dir`` matching ``file_glob`` (``<N>`` → ``run``)
+    whose name carries ``run`` as a whole number, sorted. Object-format and
+    offline lookups; ``--runs`` there may be a run or a sub-run number."""
+    glob = file_glob.replace("<N>", str(run))
+    return [p for p in sorted(Path(data_dir).glob(glob)) if names_run(p.name, run)]
 
 
 def _dedup(paths: List[Path]) -> List[Path]:
@@ -128,15 +144,6 @@ def not_found_message(data_root, run, *, kind: str,
         exact = f"Run{run}.root" if kind == "drs" else f"flattened_Run{run}.root"
         lines.append(f"    • point at the exact file:  {file_flag} /path/to/{exact}")
     return "\n".join(lines) + "\n"
-
-
-def require_run_file(data_root, run, *, kind: str,
-                     explicit: Optional[str] = None) -> Path:
-    """Resolve one run's file or ``raise SystemExit`` with the actionable error."""
-    p = resolve_run_file(data_root, run, kind=kind, explicit=explicit)
-    if p is not None:
-        return p
-    raise SystemExit(not_found_message(data_root, run, kind=kind, explicit=explicit))
 
 
 def resolve_runs(data_root, runs, *, kind: str,

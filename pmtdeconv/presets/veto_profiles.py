@@ -44,9 +44,6 @@ class VetoProfile:
     t_peak_max_ns: float
     afterpulse_window_ns: float
     afterpulse_height_ratio: float
-    post_sat_window_ns: float
-    post_sat_sigma_mult: float
-    post_sat_offset_ns: float
     min_charge_purity: float
     baseline_search_end_ns: float = 600.0
     pad_ns: float = 18.0
@@ -85,7 +82,6 @@ WAVELET_HITS_PROFILE = VetoProfile(
     no_trigger_amp=15.0, raw_snr_mult=10.0,
     t_peak_min_ns=20.0, t_peak_max_ns=1400.0,
     afterpulse_window_ns=40.0, afterpulse_height_ratio=5.0,
-    post_sat_window_ns=50.0, post_sat_sigma_mult=3.0, post_sat_offset_ns=20.0,
     min_charge_purity=0.5,
 )
 
@@ -106,7 +102,6 @@ BENCHMARK_HITS_PROFILE = VetoProfile(
     no_trigger_amp=5.0, raw_snr_mult=10.0,
     t_peak_min_ns=20.0, t_peak_max_ns=1400.0,
     afterpulse_window_ns=40.0, afterpulse_height_ratio=20.0,
-    post_sat_window_ns=50.0, post_sat_sigma_mult=3.0, post_sat_offset_ns=20.0,
     min_charge_purity=0.25,
     version="1",
 )
@@ -119,7 +114,6 @@ STFT_HITS_PROFILE = VetoProfile(
     no_trigger_amp=1.0, raw_snr_mult=1.0,
     t_peak_min_ns=1.0, t_peak_max_ns=1400.0,
     afterpulse_window_ns=40.0, afterpulse_height_ratio=100.0,
-    post_sat_window_ns=50.0, post_sat_sigma_mult=100.0, post_sat_offset_ns=20.0,
     min_charge_purity=0.0,
 )
 
@@ -173,6 +167,11 @@ def veto_profiles_dir(data_root) -> _Path:
     return _Path(data_root) / "calibrations" / "veto_profiles"
 
 
+# Removed 2026-10-23 with the post_sat_shift veto; profiles saved before then
+# still carry them, and are read without them.
+RETIRED_FIELDS = ("post_sat_window_ns", "post_sat_sigma_mult", "post_sat_offset_ns")
+
+
 def load_veto_profile_yaml(path) -> VetoProfile:
     """Load one YAML veto profile into a :class:`VetoProfile` (strict: unknown
     keys are an error, so a typo'd threshold never silently does nothing)."""
@@ -180,6 +179,8 @@ def load_veto_profile_yaml(path) -> VetoProfile:
     raw = yaml.safe_load(_Path(path).read_text()) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"veto profile {path} must be a YAML mapping")
+    for retired in RETIRED_FIELDS:
+        raw.pop(retired, None)
     known = set(VetoProfile.__dataclass_fields__)
     unknown = set(raw) - known
     if unknown:

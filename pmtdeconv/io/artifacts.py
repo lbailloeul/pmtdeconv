@@ -19,7 +19,8 @@ DEFAULT_INDEX_NAME = "artifact_index.json"
 
 
 def _utc_now() -> str:
-    return _dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return _dt.datetime.now(_dt.timezone.utc).replace(
+        tzinfo=None).isoformat(timespec="seconds") + "Z"
 
 
 def _load_manifest(path: Path) -> Tuple[Optional[Dict[str, Any]], str]:

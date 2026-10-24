@@ -31,21 +31,19 @@ class Detector:
 
     Field names mirror what ``process_run`` / ``process_run_object`` /
     ``process_run_stft`` read off their ``args`` parameter, so a ``Detector``
-    is a drop-in carrier. ``out_dir`` / ``dt_ns`` may be refined by the command
-    after construction (explicit ``--out-dir``, object-format ``dt_ns=="auto"``
-    per-file resolution) exactly as the legacy code did.
+    is a drop-in carrier. ``out_dir`` may be refined by the command after
+    construction (explicit ``--out-dir``).
     """
     # --- run selection / IO ---
     runs: List[int]
     entry_stop: Optional[int]
-    dt_ns: float
+    dt_ns: Optional[float]          # None: read from each run file (object, auto)
     polarity: int
     format: str
     file_glob: Optional[str]
     tree: Optional[str]
     branches: Optional[List[str]]
     data_root: Optional[str]
-    data_subdir: Optional[str]
     out_dir: Optional[str]
     out_suffix: str
     # --- deconvolution / filter ---
@@ -133,22 +131,17 @@ class Detector:
             vp_source = "builtin"
             vp_version = vp_obj.version if vp_obj is not None else "0"
             vp_explicit = False
-        branches = (settings.branch_pattern
-                    if isinstance(settings.branch_pattern, list) else None)
 
         return cls(
-            runs=settings.runs or [65213],
+            runs=settings.runs or [],
             entry_stop=settings.entry_stop,
-            # auto -> 0.5051 placeholder (matches legacy _build_legacy_args);
-            # the command overrides per-file for object-format dt_ns=="auto".
-            dt_ns=(float(settings.dt_ns) if settings.dt_ns != "auto" else 0.5051),
+            dt_ns=(None if settings.dt_ns == "auto" else float(settings.dt_ns)),
             polarity=int(settings.polarity),
             format=settings.format,
             file_glob=settings.file_glob,
             tree=settings.tree,
-            branches=branches,
+            branches=settings.explicit_branches,
             data_root=(str(settings.data_root) if settings.data_root else None),
-            data_subdir=None,
             out_dir=(str(settings.out_dir) if settings.out_dir else None),
             out_suffix=out_suffix,
             cosine_cutoff_mhz=(float(settings.cosine_cutoff_mhz)

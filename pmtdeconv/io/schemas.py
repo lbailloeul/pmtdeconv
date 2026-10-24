@@ -63,9 +63,9 @@ HIT_RESULTS_COLUMNS: Tuple[str, ...] = (
     "baseline_ped", "baseline_sig",
     "baseline_t0", "baseline_t1",
     "u_rec_noise",
-    # S5: per-waveform data-quality flag (plateau-detected ADC clipping).
-    # Saturated events are kept + flagged (timing recovered, charge unreliable);
-    # appended at the END so this is a no-version-bump schema change.
+    # S5: per-waveform plateau-clipping flag. Saturated waveforms have been
+    # dropped (reason "saturated") since 2026-10-23, so passing rows carry
+    # False; appended at the END so this was a no-version-bump schema change.
     "saturated",
     # 2026-07-01: CFD-50 rising-edge crossing time ('half-time', sub-sample) —
     # the MQAna `halftime`, lower-jitter timewalk estimator. `t_peak` keeps its
@@ -92,7 +92,7 @@ HIT_RESULTS_SCHEMA = CsvSchema(
         "--peak-order=first). `t_peak` is the deconv apex time (sample "
         "grid); `t_half` the CFD-50 rising-edge crossing (sub-sample). "
         "`reason` is empty for successful peaks "
-        "and one of out_of_time / afterpulse_veto / post_sat_shift / "
+        "and one of out_of_time / afterpulse_veto / "
         "negative_charge / no_raw_peak / no_veto / no_peaks_found for "
         "rejected ones."
     ),
@@ -132,19 +132,6 @@ REGISTRY: Dict[str, CsvSchema] = {
     # timewalk (PR 2)
     "timewalk_summary":   TIMEWALK_SUMMARY_SCHEMA,
 }
-
-
-def schema_for(role: str) -> CsvSchema:
-    """Return the CsvSchema for a manifest output role.
-
-    Raises KeyError if the role is unknown — bump the registry above
-    when adding new output kinds.
-    """
-    if role not in REGISTRY:
-        raise KeyError(
-            f"No schema registered for role {role!r}. "
-            f"Known: {sorted(REGISTRY)}.")
-    return REGISTRY[role]
 
 
 def version_map(roles_present: Tuple[str, ...]) -> Dict[str, str]:

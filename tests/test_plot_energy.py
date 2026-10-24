@@ -18,7 +18,8 @@ import pytest
 
 from pmtdeconv.plotting.energy import _process_channel, _build_kernel
 from pmtdeconv.pipeline.denoise import denoise
-from pmtdeconv.utils import deconvolve_hits, cosine_lowpass_filter
+from pmtdeconv.core.dsp import deconvolve_hits
+from pmtdeconv.core.filters import cosine_lowpass_filter
 
 N = 1024
 DT = 0.5051

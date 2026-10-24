@@ -178,10 +178,11 @@ DATASETS: Dict[str, DatasetPreset] = {
         branch_pattern=["d0_ch1", "d0_ch2"],
         dt_ns=0.5051,
         polarity=+1,
-        # Matches the legacy default in both wavelets_cosine_deconvolution_Na22.py
-        # and deconv_area_Na22.py (the wavelet-pipeline default; the STFT
-        # variant used 100 MHz historically).
-        cosine_cutoff_mhz=450.0,
+        # 75 MHz since 2026-10-23 (was the legacy 450): the DRS4 records carry
+        # fs/32-harmonic lines at 61.9-396 MHz (~0.7 mV rms through 450 MHz);
+        # 75 passes only 61.9 at 0.27 gain. Real 66810 timing 5.54 ns @75 vs
+        # 10.4 @450; 50 MHz times 0.1 ns better but separates pile-up worse.
+        cosine_cutoff_mhz=75.0,
         default_template_csv=CD109_STACKED_UNLOCKED_CSV,
         default_template_csv_na22fmt=CD109_STACKED_UNLOCKED_NA22FMT_CSV,
         spe_band_mv=(50.0, 200.0),

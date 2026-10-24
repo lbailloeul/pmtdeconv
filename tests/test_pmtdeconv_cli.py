@@ -16,7 +16,6 @@ import argparse
 import io
 import json
 import sys
-import tempfile
 import textwrap
 from pathlib import Path
 
@@ -34,8 +33,8 @@ from pmtdeconv.pipeline.deconv_pulse_results import (
 )
 from pmtdeconv.pipeline.area_mqana import mqana_area, fixed_window_area
 from pmtdeconv.presets import resolve_settings, Settings
-from pmtdeconv.presets.configs import CONFIGS, list_configs
-from pmtdeconv.presets.datasets import DATASETS, list_datasets
+from pmtdeconv.presets.configs import CONFIGS
+from pmtdeconv.presets.datasets import list_datasets
 
 
 # ─── helpers ──────────────────────────────────────────────────────
@@ -58,9 +57,8 @@ def _make_args(**overrides) -> argparse.Namespace:
 # ─── CLI dispatch ─────────────────────────────────────────────────
 
 def test_cli_version():
-    parser = cli.build_parser()
     with pytest.raises(SystemExit) as exc:
-        parser.parse_args(["--version"])
+        cli.main(["--version"])
     assert exc.value.code == 0
 
 
@@ -90,23 +88,20 @@ def test_cli_version():
 ])
 def test_cli_help_runs(argv):
     """Every --help path exits 0 (= argparse SystemExit code 0)."""
-    parser = cli.build_parser()
     with pytest.raises(SystemExit) as exc:
-        parser.parse_args(argv)
+        cli.main(argv)
     assert exc.value.code == 0
 
 
 def test_deconv_command_group_is_not_public():
-    parser = cli.build_parser()
     with pytest.raises(SystemExit) as exc:
-        parser.parse_args(["deconv", "pulse", "--help"])
+        cli.main(["deconv", "pulse", "--help"])
     assert exc.value.code == 2
 
 
 def test_area_is_a_leaf_not_a_raw_area_group():
-    parser = cli.build_parser()
     with pytest.raises(SystemExit) as exc:
-        parser.parse_args(["area", "mqana"])
+        cli.main(["area", "mqana"])
     assert exc.value.code == 2
 
 
@@ -120,7 +115,7 @@ def test_list_datasets_has_seven():
 
 @pytest.mark.parametrize("name,expected", [
     ("na22",         dict(dt_ns=0.5051, polarity=+1,
-                          cosine_cutoff_mhz=450.0)),
+                          cosine_cutoff_mhz=75.0)),
     ("cd109",        dict(dt_ns=1.432, polarity=+1,
                           cosine_cutoff_mhz=50.0)),
     ("milliqan",     dict(dt_ns=1.25, polarity=+1,
@@ -138,15 +133,14 @@ def test_dataset_preset_resolution(name, expected):
 
 # ─── named config preset overlay ─────────────────────────────────
 
-def test_list_configs_includes_winning():
-    assert "na22-timewalk-winning-2026-05" in list_configs()
+def test_configs_include_winning():
+    assert "na22-timewalk-winning-2026-05" in CONFIGS
 
 
 def test_config_preset_overrides_dataset():
     args = _make_args(dataset="na22", preset="na22-timewalk-winning-2026-05")
     settings, prov = resolve_settings(args)
-    # Cosine cutoff is the same as the dataset (both 450) — but the
-    # preset still claims provenance because it explicitly set it.
+    # The preset pins 450 over the dataset's 75 and claims provenance.
     assert settings.cosine_cutoff_mhz == 450.0
     assert prov["cosine_cutoff_mhz"] == "config"
     # Wavelet thresholding k=1.0 is preset-only (dataset doesn't set it)
@@ -161,7 +155,7 @@ def test_preset_without_explicit_dataset_uses_base():
     args = _make_args(preset="na22-timewalk-winning-2026-05")
     settings, prov = resolve_settings(args)
     assert settings.dataset == "na22"
-    assert settings.cosine_cutoff_mhz == 450.0    # from dataset
+    assert settings.cosine_cutoff_mhz == 450.0    # pinned by the preset
     assert settings.wthresh_k == 1.0           # from preset
 
 
@@ -284,13 +278,16 @@ def test_stft_pulse_dry_run_writes_canonical_manifest(tmp_path):
 
 
 def test_real_cli_parser_does_not_override_preset_defaults(tmp_path):
+    # The 2026-05 snapshot sets every wavelet knob; argparse defaults must
+    # not clobber any of them.
     out_dir = tmp_path / "hits"
     assert cli.main([
-        "hits", "--preset", "na22-timewalk", "--runs", "65213",
+        "hits", "--preset", "na22-timewalk-winning-2026-05", "--runs", "65213",
         "--out-dir", str(out_dir), "--dry-run", "--log-level", "quiet",
     ]) == 0
     manifest = json.loads((out_dir / "manifest.json").read_text())
     provenance = manifest["settings_provenance"]
+    assert provenance["denoiser"] == "config"
     assert provenance["wavelet"] == "config"
     assert provenance["wlevel"] == "config"
     assert provenance["wmode"] == "config"
@@ -317,7 +314,7 @@ def test_run_recipe_dry_run_and_results_commands(tmp_path, capsys):
         "run", "na22-timewalk", "--out-dir", str(workflow),
         "--dry-run", "--log-level", "quiet",
     ]) == 0
-    for step in ("raw-area", "hits", "timewalk"):
+    for step in ("raw-timing", "raw-area", "timewalk"):
         assert (workflow / step / "manifest.json").exists()
 
     assert cli.main([
@@ -326,22 +323,21 @@ def test_run_recipe_dry_run_and_results_commands(tmp_path, capsys):
     ]) == 0
     output = capsys.readouterr().out
     assert "raw-area" in output
-    assert "hits" in output
     assert "timewalk" in output
 
     assert cli.main([
         "results", "list", "--outputs-dir", str(workflow),
-        "--command", "hits", "--log-level", "quiet",
+        "--command", "timewalk", "--log-level", "quiet",
     ]) == 0
     filtered = capsys.readouterr().out
-    assert "hits" in filtered
+    assert "timewalk" in filtered
     assert "raw-area" not in filtered
 
     assert cli.main([
-        "results", "path", "hits", "--outputs-dir", str(workflow),
+        "results", "path", "timewalk", "--outputs-dir", str(workflow),
         "--log-level", "quiet",
     ]) == 0
-    assert str(workflow / "hits") in capsys.readouterr().out
+    assert str(workflow / "timewalk") in capsys.readouterr().out
 
 
 def test_na22_recipe_rejects_other_dataset():
@@ -358,7 +354,8 @@ def test_config_resolve_reports_preset_provenance(capsys):
     ]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["settings"]["dataset"] == "na22"
-    assert payload["provenance"]["wthresh_k"] == "config"
+    assert payload["provenance"]["denoiser"] == "config"
+    assert payload["provenance"]["peak_order"] == "config"
 
 
 def test_artifact_index_reads_manifest_and_orphan_dir(tmp_path):
@@ -792,3 +789,142 @@ def test_pulse_csv_flag_renamed_to_hits_csv(module, capsys):
     assert parser.parse_args(["--pulse-csv", "x.csv"]).pulse_csv == "x.csv"
     assert "--hits-csv" in capsys.readouterr().err
     assert "--pulse-csv" not in parser.format_help()
+
+
+def test_hits_default_out_dir_holds_csv_and_manifest(tmp_path, monkeypatch):
+    """Without --out-dir, hits.csv and manifest.json land in ONE directory, and
+    the manifest records the ROOT file that was actually read.
+
+    Until 2026-09-23 the flat wavelet reader picked its own hardcoded
+    ``deconv_pulse_Na22_lab_cosine_wavelet`` folder whenever --out-dir was
+    omitted, while the manifest went to the dataset-named folder: a manifest
+    listing a hits.csv that was not beside it. Its data inputs were looked up
+    under data/Na22_lab regardless of --data-root.
+    """
+    from pmtdeconv.commands import hits as hits_cmd
+    fixtures = Path(__file__).resolve().parent / "fixtures"
+    auto = tmp_path / "auto"
+    monkeypatch.setattr(hits_cmd, "hits_output_dir", lambda settings: auto)
+
+    assert cli.main(["hits", "--dataset", "na22", "--data-root", str(fixtures),
+                     "--runs", "0"]) == 0
+
+    assert (auto / "hits.csv").exists()
+    manifest = json.loads((auto / "manifest.json").read_text())
+    data_inputs = [Path(i["path"]).resolve() for i in manifest["inputs"]
+                   if i["role"] == "root_data"]
+    assert data_inputs == [(fixtures / "flattened_Run0.root").resolve()]
+
+
+def test_plot_analyze_renders_from_a_hits_csv(tmp_path):
+    """`plot analyze --hits-csv` draws its plot set from any hits CSV (its old
+    presets pointed at output folders that exist on one machine only)."""
+    rng = np.random.default_rng(0)
+    n = 200
+    import pandas as pd
+    pd.DataFrame({
+        "run": 0, "cycle": 1, "entry": np.repeat(np.arange(n // 2), 2),
+        "chan": np.tile([1, 2], n // 2), "branch": np.tile(["d0_ch1", "d0_ch2"], n // 2),
+        "success": True, "peak_id": 1.0,
+        "t_peak": rng.uniform(100, 400, n), "height": rng.uniform(5, 50, n),
+        "charge": rng.uniform(1e3, 5e4, n),
+        "win_lo_ns": 90.0, "win_hi_ns": 450.0,
+    }).to_csv(tmp_path / "hits.csv", index=False)
+
+    out = tmp_path / "plots"
+    assert cli.main(["plot", "analyze", "--hits-csv", str(tmp_path / "hits.csv"),
+                     "--out-dir", str(out)]) == 0
+    pdfs = sorted(p.name for p in out.glob("*.pdf"))
+    assert any(n.startswith("charge_histogram") for n in pdfs), pdfs
+    assert any(n.startswith("ch1_vs_ch2") for n in pdfs), pdfs
+
+
+def test_plot_analyze_requires_a_csv():
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["plot", "analyze"])
+    assert "--hits-csv" in str(exc.value.code)
+
+
+# ─── 2026-10 decisions ───────────────────────────────────────────────
+
+def test_default_denoiser_is_stft_and_wavelet_is_flagged(tmp_path, capsys):
+    """STFT is the `hits` default since the 2026-10 denoiser study; the
+    wavelet still runs but says it is experimental."""
+    fixtures = Path(__file__).resolve().parent / "fixtures"
+    common = ["hits", "--dataset", "na22", "--data-root", str(fixtures),
+              "--runs", "0", "--entry-stop", "20"]
+    assert cli.main(common + ["--out-dir", str(tmp_path / "d")]) == 0
+    manifest = json.loads((tmp_path / "d" / "manifest.json").read_text())
+    assert manifest["settings"]["denoiser"] == "stft"
+    assert manifest["settings"]["stft_amp_threshold"] == 5.0
+    assert "[experimental]" not in capsys.readouterr().out
+
+    assert cli.main(common + ["--denoiser", "wavelet",
+                              "--out-dir", str(tmp_path / "w")]) == 0
+    assert "[experimental] wavelet denoiser" in capsys.readouterr().out
+
+
+def test_timewalk_presets_name_their_denoiser():
+    """The 2026-05 snapshot was validated with the wavelet and must keep it;
+    the stable alias follows the 2026-10 STFT snapshot."""
+    from pmtdeconv.presets.configs import CONFIGS
+    assert CONFIGS["na22-timewalk-winning-2026-05"].overrides["denoiser"] == "wavelet"
+    assert CONFIGS["na22-timewalk-2026-10"].overrides["denoiser"] == "stft"
+    assert (CONFIGS["na22-timewalk"].overrides
+            == CONFIGS["na22-timewalk-2026-10"].overrides)
+
+
+def test_flag_abbreviations_are_rejected():
+    """`hits --all` used to be read as --allow-generic-fallback."""
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["hits", "--dataset", "na22", "--runs", "0", "--all",
+                  "--dry-run"])
+    assert exc.value.code == 2
+
+
+def test_template_build_aggregates_unless_told_not_to(tmp_path, monkeypatch):
+    """`template build` runs the per-channel aggregation itself (2026-10);
+    --no-aggregate stops after the per-file step."""
+    from pmtdeconv.commands import template_aggregate
+    from pmtdeconv.pipeline import template_build_impl
+    calls = []
+    monkeypatch.setattr(template_build_impl, "main",
+                        lambda configs, model, out_dir: None)
+    monkeypatch.setattr(template_aggregate, "aggregate",
+                        lambda out_dir: calls.append(out_dir) or [])
+    base = ["template", "build", "--dataset", "cd109", "--data-root", str(tmp_path)]
+    assert cli.main(base + ["--out-dir", str(tmp_path / "a")]) == 0
+    assert calls == [(tmp_path / "a").resolve()]
+    assert cli.main(base + ["--out-dir", str(tmp_path / "b"), "--no-aggregate"]) == 0
+    assert len(calls) == 1
+
+
+
+def test_timewalk_fails_loudly_when_the_reference_window_is_empty(tmp_path):
+    """An --a-ref window outside the area source's scale used to write an
+    empty curve and exit 0 (`run na22-timewalk --raw-source mqana`)."""
+    fixtures = Path(__file__).resolve().parent / "fixtures"
+    common = ["--dataset", "na22", "--data-root", str(fixtures), "--runs", "0"]
+    assert cli.main(["raw-area", "mqana", *common, "--out-dir", str(tmp_path / "a")]) == 0
+    assert cli.main(["hits", *common, "--out-dir", str(tmp_path / "h")]) == 0
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["timewalk", "run", *common,
+                  "--area-csv", str(tmp_path / "a" / "area_mqana_run0.csv"),
+                  "--hits-csv", str(tmp_path / "h" / "hits.csv"),
+                  "--a-ref", "1e12", "2e12", "--out-dir", str(tmp_path / "t")])
+    assert "No events in the reference window" in str(exc.value.code)
+    assert "areas span" in str(exc.value.code)
+
+
+def test_na22_timewalk_recipe_uses_raw_cfd_timing(monkeypatch):
+    """Run 65213 is mostly saturated, so the recipe times on raw CFD
+    (raw_timing CSV, t_cfd) and never runs the deconvolution."""
+    from pmtdeconv.commands import run_recipe
+    steps = []
+    monkeypatch.setattr(run_recipe, "_execute", lambda label, argv: steps.append(argv))
+    assert cli.main(["run", "na22-timewalk", "--dataset", "na22",
+                     "--runs", "65213", "--dry-run"]) == 0
+    timewalk = next(a for a in steps if a[:2] == ["timewalk", "run"])
+    assert timewalk[timewalk.index("--time-col") + 1] == "t_cfd"
+    assert timewalk[timewalk.index("--hits-csv") + 1].endswith("raw_timing_run65213.csv")
+    assert not [a for a in steps if a[0] == "hits"]

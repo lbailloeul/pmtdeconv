@@ -62,11 +62,6 @@ class TestFromVetoProfile:
             VETO_PROFILES.lookup(name="stft_hits"), denoiser_kind="stft")
         assert s == STFT_PROFILE
 
-    def test_allow_all_enables_switches(self):
-        s = HitsProfile.from_veto_profile(
-            VETO_PROFILES.lookup(name="stft_hits"), denoiser_kind="stft",
-            allow_all=True)
-        assert s.allow_no_vetoes and s.allow_peak_order and s.allow_denoise_raw
 
 
 def _run_hits(out_dir: Path, *extra: str, data_root: Path = FIXTURE_DIR
@@ -86,13 +81,14 @@ def _manifest(out_dir: Path) -> dict:
                     reason="synth fixture missing (make_synth_root.py)")
 class TestVetoProfileCLI:
     def test_cross_application_wavelet_under_stft_profile(self, tmp_path):
-        res = _run_hits(tmp_path / "x", "--veto-profile", "stft_hits")
+        res = _run_hits(tmp_path / "x", "--denoiser", "wavelet",
+                        "--veto-profile", "stft_hits")
         assert res.returncode == 0, res.stderr
         m = _manifest(tmp_path / "x")
         assert m["stats"]["veto_profile"] == "stft_hits"
         assert m["stats"]["veto_profile_source"] == "builtin"
         # relaxed thresholds admit more events than the strict default
-        dflt = _run_hits(tmp_path / "y")
+        dflt = _run_hits(tmp_path / "y", "--denoiser", "wavelet")
         assert dflt.returncode == 0, dflt.stderr
         n_relaxed = len(pd.read_csv(tmp_path / "x" / "all_results.csv"))
         n_strict = len(pd.read_csv(tmp_path / "y" / "all_results.csv"))
@@ -106,9 +102,30 @@ class TestVetoProfileCLI:
             m = _manifest(tmp_path / tag)
             assert m["stats"]["veto_profile"] == "benchmark_hits"
 
+    def test_stft_honors_no_vetoes_without_explicit_profile(self, tmp_path):
+        # Until 2026-10 the STFT path silently ignored --no-vetoes (and
+        # --peak-order) unless a profile was named. It is the default
+        # denoiser now, so it must honor them on its own.
+        res = _run_hits(tmp_path / "nv", "--denoiser", "stft", "--no-vetoes")
+        assert res.returncode == 0, res.stderr
+        df = pd.read_csv(tmp_path / "nv" / "all_results.csv")
+        assert (df["reason"] == "no_veto").any()
+
+    def test_stft_honors_peak_order(self, tmp_path):
+        res = _run_hits(tmp_path / "po", "--denoiser", "stft", "--no-vetoes",
+                        "--peak-order", "tallest")
+        assert res.returncode == 0, res.stderr
+        df = pd.read_csv(tmp_path / "po" / "all_results.csv")
+        ok = df[df["success"] == True]                     # noqa: E712
+        multi = ok.groupby(["entry", "branch"]).filter(lambda g: len(g) > 1)
+        assert len(multi), "fixture must have multi-peak waveforms"
+        for _, g in multi.groupby(["entry", "branch"]):
+            heights = g.sort_values("peak_id")["height"].to_numpy()
+            assert (heights[:-1] >= heights[1:]).all(), "peak_id 1 must be tallest"
+
     def test_stft_honors_no_vetoes_under_explicit_profile(self, tmp_path):
-        # Legacy STFT path silently ignored --no-vetoes; an explicit profile
-        # must honor it (allow_all) — rows then carry reason="no_veto".
+        # An explicitly named profile must honor it too — rows then carry
+        # reason="no_veto".
         res = _run_hits(tmp_path / "nv", "--denoiser", "stft",
                         "--veto-profile", "benchmark_hits", "--no-vetoes")
         assert res.returncode == 0, res.stderr

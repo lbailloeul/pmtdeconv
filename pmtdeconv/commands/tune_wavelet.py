@@ -35,6 +35,9 @@ from pmtdeconv.io.manifest import maybe_dry_run_exit, write_manifest
 from pmtdeconv.io.deconv_pulse import DECONV_PULSE_CSV
 from pmtdeconv.io.truth import find_truth_for
 from pmtdeconv.pipeline.scoring import ScoringWeights, score_run
+from pmtdeconv.pipeline.template import (
+    add_generic_fallback_flag, configured_template_csv,
+)
 from pmtdeconv.presets import resolve_settings
 
 from pmtdeconv.commands._tune_shared import (
@@ -67,7 +70,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                    help="Q1 isolation knob: cosine cutoff held fixed during "
                         "the wavelet sweep. Defaults to the dataset preset's "
                         "cosine_cutoff_mhz (450 MHz for na22).")
-    g.add_argument("--template", type=str, default=None)
+    g.add_argument("--template", type=str, default=None,
+                   help="SPE template CSV path. Default: dataset's preset.")
+    add_generic_fallback_flag(g)
     g.add_argument("--write-presets", action="store_true")
     g.add_argument("--n-events", type=int, default=None)
 
@@ -81,10 +86,13 @@ def _default_out_dir(settings) -> Path:
     return PROJECT_ROOT / "outputs" / "".join(parts)
 
 
-def _build_legacy_args(settings, cell_out_dir: Path,
-                       fixture: Path, dt_ns: float, cosine_cutoff_mhz: float,
-                       wavelet: str, wlevel: int, wmode: str,
-                       wthresh_k: float) -> SimpleNamespace:
+def _cell_args(template_csv, cell_out_dir: Path,
+               fixture: Path, dt_ns: float, cosine_cutoff_mhz: float,
+               wavelet: str, wlevel: int, wmode: str,
+               wthresh_k: float) -> SimpleNamespace:
+    """Per-cell args for the hits engine. Deliberately not the full
+    ``Detector``: the sweep pins no vetoes, the tallest peak and SNR /
+    peak distance 5 so every cell is scored on the same footing."""
     return SimpleNamespace(
         runs=[0],
         entry_stop=None,
@@ -96,7 +104,7 @@ def _build_legacy_args(settings, cell_out_dir: Path,
         denoise_raw=False,
         no_denoise=False,
         out_suffix="",
-        fit_csv=str(settings.template_csv) if settings.template_csv else None,
+        fit_csv=str(template_csv) if template_csv else None,
         no_vetoes=True,
         peak_order="tallest",
         data_root=str(fixture.parent),
@@ -117,6 +125,8 @@ def _iter_grid(args) -> List[Tuple[str, int, str, float]]:
 def run(args: argparse.Namespace) -> int:
     t0 = time.time()
     settings, provenance = resolve_settings(args, require_data_root=False)
+    # A configured-but-missing template is an error (the rule hits applies).
+    template_csv = configured_template_csv(settings, provenance)
 
     out_dir = settings.out_dir or _default_out_dir(settings)
     out_dir = Path(out_dir)
@@ -157,12 +167,12 @@ def run(args: argparse.Namespace) -> int:
             t_cell = time.time()
             with tempfile.TemporaryDirectory(dir=out_dir) as tmpd:
                 cell_out_dir = Path(tmpd)
-                legacy = _build_legacy_args(
-                    settings, cell_out_dir, fixture,
+                cell_args = _cell_args(
+                    template_csv, cell_out_dir, fixture,
                     dt_ns, cosine_cutoff_mhz,
                     wavelet, wlevel, wmode, wthresh_k)
                 try:
-                    process_run(legacy)
+                    process_run(cell_args)
                 except Exception as e:
                     print(f"  {wavelet}/L{wlevel}/{wmode}/k{wthresh_k}  "
                           f"FAILED: {e}")

@@ -12,7 +12,7 @@ Lifted verbatim from
 """
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import Tuple
 
 import awkward as ak
 import numpy as np
@@ -60,20 +60,6 @@ def select_tree_key(ufile, tree_name: str = "waveforms"
 
     mult = len(all_keys) if nested else 1
     return all_keys[-1], mult
-
-
-def select_tree(ufile, tree_name: str = "waveforms",
-                branches_ref: Optional[List[str]] = None
-                ) -> Tuple[str, int, int, List[str]]:
-    """Richer variant returning ``(tree_key, cycle_num, per_cycle_mult, branches)``.
-
-    Useful when downstream callers need the branch list resolved
-    against the chosen cycle (e.g. deconv_area_Na22's main loop).
-    """
-    tree_key, per_cycle_mult = select_tree_key(ufile, tree_name)
-    cycle_num = int(tree_key.split(";")[-1])
-    branches = branches_ref or sorted(ufile[tree_key].keys())
-    return tree_key, cycle_num, per_cycle_mult, branches
 
 
 def to_numpy2d(ak_array) -> np.ndarray:

@@ -37,6 +37,17 @@ def legacy_pulse_output_dir(settings, denoiser: str) -> Path:
     )
 
 
+def _hits_flavor(settings) -> str:
+    # Flat STFT has its own reader; object format always uses the wavelet dir.
+    stft = settings.denoiser == "stft" and settings.format != "object"
+    return "stft" if stft else "wavelet"
+
+
+def hits_output_dir(settings) -> Path:
+    """Where ``hits`` writes when ``--out-dir`` is omitted."""
+    return pulse_output_dir(settings, _hits_flavor(settings))
+
+
 def waveform_output_dir(settings) -> Path:
     return suffixed_output_dir(f"deconv_area_{_dataset(settings)}", settings)
 
@@ -49,19 +60,6 @@ def raw_area_output_dir(settings, flavor: str, *, legacy: bool = False) -> Path:
 def timewalk_output_dir(settings) -> Path:
     run = (settings.runs or ["unknown"])[0]
     return suffixed_output_dir(f"timewalk_{_dataset(settings)}_run{run}", settings)
-
-
-def presentation_plots_dir(subdir: str = "") -> Path:
-    """Canonical directory for publication-ready figures (step 8 convention).
-
-    Final presentation/paper figures are collected under
-    ``outputs/presentation_plots/[<subdir>]`` — kept distinct from the
-    per-command working output dirs (which carry preset/suffix in their name).
-    Point any plotting command's ``--out-dir`` here to publish a figure, e.g.
-    ``--out-dir $(... )/outputs/presentation_plots/timewalk``.
-    """
-    base = PROJECT_ROOT / "outputs" / "presentation_plots"
-    return base / subdir if subdir else base
 
 
 def resolve_area_csv(settings) -> Optional[Path]:
@@ -113,7 +111,8 @@ def resolve_pulse_csv(settings) -> Optional[Path]:
             if candidate.exists():
                 return candidate
 
-    found = resolve_deconv_pulse_csv(pulse_output_dir(settings, "wavelet"))
+    found = resolve_deconv_pulse_csv(hits_output_dir(settings))
     if found is not None:
         return found
-    return resolve_deconv_pulse_csv(legacy_pulse_output_dir(settings, "wavelet"))
+    return resolve_deconv_pulse_csv(
+        legacy_pulse_output_dir(settings, _hits_flavor(settings)))

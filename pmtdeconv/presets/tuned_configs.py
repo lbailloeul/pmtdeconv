@@ -2,7 +2,7 @@
 
 DO NOT EDIT BY HAND. Regenerated idempotently each time ``--write-presets``
 runs: read existing entries, merge new ones, collapse identical-config
-dated snapshots (keep the newest per config) and emit a stable
+dated snapshots (keep the oldest per config) and emit a stable
 ``<prefix>-tuned-latest-<suffix>`` alias tracking the most recent
 winner, then rewrite the whole file.
 """
@@ -12,8 +12,6 @@ from pmtdeconv.presets.configs import ConfigPreset
 
 TUNED_CONFIGS: Dict[str, ConfigPreset] = {}
 
-def is_tuned(name: str) -> bool:
-    return name in TUNED_CONFIGS
 
 TUNED_CONFIGS['na22-cosine-tuned-2026-05-31-level3'] = ConfigPreset(
     name='na22-cosine-tuned-2026-05-31-level3',

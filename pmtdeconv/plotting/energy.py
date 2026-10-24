@@ -24,13 +24,14 @@ from scipy.signal import find_peaks
 from pmtdeconv.core.filters import cosine_lowpass_filter    # noqa: E402
 from pmtdeconv.core.dsp import deconvolve_hits               # noqa: E402
 from pmtdeconv.core.peaks import (                           # noqa: E402
+    RAW_LOCAL_BASELINE_NS,
     find_integration_windows,
     apply_peak_vetoes,
 )
 # Step 6: the wavelet/STFT curves go through the SAME denoiser wrapper as
 # `hits` (pipeline.denoise.denoise), so the plot's "wavelet" curve is provably
 # the identical transform — no more divergent hardcoded module constants.
-from pmtdeconv.core.dsp import detect_saturation_plateau
+from pmtdeconv.core.dsp import is_saturated
 from pmtdeconv.pipeline.denoise import denoise
 from pmtdeconv.plotting.style import use_root_style, style_root_axes
 
@@ -98,7 +99,7 @@ def _load(proc_root: Path, board: int, channels: Iterable[int],
 
 
 def _qualifying_charge(u, raw, ped, noise, pad_bins: int, dt: float,
-                       n_samp: int) -> Tuple[float, int]:
+                       raw_delay: int, n_samp: int) -> Tuple[float, int]:
     height = max(4.0 * noise, 5.0)
     peaks, _ = find_peaks(u, height=height, distance=max(int(8.0 / dt), 1))
     if len(peaks) == 0:
@@ -113,8 +114,10 @@ def _qualifying_charge(u, raw, ped, noise, pad_bins: int, dt: float,
             pk, pk_i, peaks, u, t, windows, pulse_widths, n_samp,
             t_peak_min_ns=20.0, t_peak_max_ns=1400.0,
             afterpulse_window_ns=40.0, afterpulse_height_ratio=5.0,
-            post_sat_cutoff_bin=n_samp, dt_ns=dt,
+            dt_ns=dt,
             raw_wave=raw, raw_ped=ped, min_raw_amp=10.0,
+            raw_delay_bins=raw_delay,
+            raw_local_bins=max(int(round(RAW_LOCAL_BASELINE_NS / dt)), 1),
             min_charge_purity=0.5,
         )
         if success:
@@ -138,8 +141,7 @@ def _process_channel(d, kern, filt, c_lo, c_hi, pad_bins, dt, n_samp, dn):
         raw = d["v"][i].astype(np.float64)
         # Plateau-detected saturation flag (universal; charge of clipped events
         # is unreliable, so it can be isolated out of the energy histograms).
-        sig = float(np.nanstd(raw[:100])) or 1.0
-        sat[j] = bool(detect_saturation_plateau(raw, sig)[0])
+        sat[j] = is_saturated(raw)
         y = raw - ped
         u_fft = deconvolve_hits(y, kern, filt)
         u_stft = denoise(u_fft, denoiser="stft", dt_ns=dt,
@@ -155,7 +157,8 @@ def _process_channel(d, kern, filt, c_lo, c_hi, pad_bins, dt, n_samp, dn):
             seg = u[c_lo:c_lo + pre_n]
             noise = 1.4826 * np.median(np.abs(seg - np.median(seg)))
             qual[m][j], _ = _qualifying_charge(u, raw, ped, noise,
-                                               pad_bins, dt, n_samp)
+                                               pad_bins, dt, int(np.argmax(kern)),
+                                               n_samp)
     return idx, whole, qual, sat
 
 
@@ -183,7 +186,7 @@ def render_energy_hist(
     wthresh_k: float = 1.0,
     stft_nperseg_ns: float = 20.0,
     stft_freq_cutoff_mhz: float = 175.0,
-    stft_amp_threshold: float = 10.0,
+    stft_amp_threshold: float = 5.0,
 ) -> dict:
     """End-to-end energy-histogram renderer.
 

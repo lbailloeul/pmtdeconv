@@ -1,90 +1,19 @@
 #!/usr/bin/env python3
-"""
-Analyze deconvolution hit results: charge histogram and charge vs time 2D histogram.
-Works with CSV output from cosine_advanced_convolve_at_scale_*.py (MilliQan + Na22).
+"""Diagnostic plots from a hits CSV — the engine behind ``pmtdeconv plot analyze``.
 
-Examples:
-  # Default — run all plots for every preset CSV that exists
-  python deconvolution/analyze_deconv.py
-
-  # Only the plain charge histogram, Na22 preset
-  python deconvolution/analyze_deconv.py --preset na22 --plot charge
-
-  # Arbitrary CSV, only the 2D charge-vs-time plot
-  python deconvolution/analyze_deconv.py --csv outputs/my_dir/hits.csv --plot charge_vs_time
-
-  # Two specific plots on Na22
-  python deconvolution/analyze_deconv.py --preset na22 --plot charge charge_vs_time
+Renders, per run: the charge histogram, the charge histogram inside a time
+window, charge vs peak height, charge vs time, and the ch1-vs-ch2 charge
+scatter. Until 2026-09-23 this module also carried a preset registry of four
+historical output folders on the author's machine and a standalone script
+entry point; both were removed — pass the CSV explicitly.
 """
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 
 from pmtdeconv.plotting.style import use_minimal_style, minimal_axes, root_viridis
-from pmtdeconv.io.deconv_pulse import DECONV_PULSE_CSV, resolve_deconv_pulse_csv
 import numpy as np
 from pathlib import Path
-
-# ── Config ──
-PROJECT_ROOT = Path(__file__).resolve().parent.parent   # bailloeulScripts/
-OUTPUTS_DIR  = PROJECT_ROOT / "outputs"
-
-
-def _preset_csv(canonical_dir, legacy_dir=None, prefer_legacy=False):
-    if prefer_legacy and legacy_dir is not None:
-        found = resolve_deconv_pulse_csv(OUTPUTS_DIR / legacy_dir)
-        if found is not None:
-            return found
-    found = resolve_deconv_pulse_csv(OUTPUTS_DIR / canonical_dir)
-    if found is not None:
-        return found
-    if legacy_dir is not None:
-        found = resolve_deconv_pulse_csv(OUTPUTS_DIR / legacy_dir)
-        if found is not None:
-            return found
-    return OUTPUTS_DIR / canonical_dir / DECONV_PULSE_CSV
-
-
-# Presets. Each entry is a dict with a label + csv + default channels.
-PRESETS = {
-    "milliqan": dict(
-        label="MilliQan Run2150.1 Cosine Advanced",
-        csv=_preset_csv(
-            "deconv_pulse_milliqan_lab_cosine_advanced",
-            "deconv_pulses_run2150.1_MilliQan_cosine_advanced",
-            prefer_legacy=True,
-        ),
-        channels=None,
-    ),
-    "run1000": dict(
-        label="Run1000 Cosine Advanced",
-        csv=_preset_csv(
-            "deconv_pulse_milliqan_lab_cosine_advanced",
-            "deconv_pulses_run1000.1_allruns_MilliQan_cosine_advanced",
-            prefer_legacy=True,
-        ),
-        channels=[38, 39],    # per-channel plots, one figure per channel
-    ),
-    "na22": dict(
-        label="Na22 Lab Cosine Advanced",
-        csv=_preset_csv(
-            "deconv_pulse_na22_lab_cosine_advanced",
-            "deconv_pulses_Na22_lab_cosine_advanced",
-        ),
-        channels=[1, 2],      # per-channel plots, one figure per channel
-    ),
-    "na22_wavelet": dict(
-        label="Na22 Lab Cosine Wavelet Battle-Lemarie bior3.5",
-        csv=_preset_csv(
-            "deconv_pulse_na22_lab_cosine_wavelet",
-            "deconv_pulses_Na22_lab_cosine_wavelet",
-        ),
-        channels=[1, 2],
-    ),
-}
-
-PLOT_CHOICES = ["all", "charge", "charge_tcut", "charge_vs_height",
-                "charge_vs_time", "ch1_vs_ch2"]
 
 
 def _plot_out_dir(csv_path, output_dir=None):
@@ -496,7 +425,7 @@ def analyze(csv_path, label="", channels=None, q_range=(None, None),
     return [p for p in outputs if p is not None]
 
 
-# ───────────────────────── CLI ─────────────────────────
+# ── Entry point (called by `pmtdeconv plot analyze`) ──
 
 def _dispatch(csv_path, base_label, channels, q_range, plots, ipulse, t_cut,
               dt_window, calib, emax, split_runs, df_override=None,
@@ -562,117 +491,3 @@ def _dispatch(csv_path, base_label, channels, q_range, plots, ipulse, t_cut,
                 ch_pair=ch_pair, calib=calib, emax=emax,
                 bins_2d=bins_2d, output_dir=output_dir))
     return [p for p in outputs if p is not None]
-
-
-def _run_preset(name, q_range, plots, ipulse, chan_override, t_cut,
-                dt_window=None, calib=None, emax=1500.0, split_runs=True,
-                bins_q=100, bins_q_2d=50, bins_t=120, bins_h=80, bins_2d=80,
-                output_dir=None):
-    spec = PRESETS[name]
-    csv_path = spec["csv"]
-    if not csv_path.exists():
-        print(f"[skip] {name}: CSV not found at {csv_path}")
-        return []
-    channels = chan_override if chan_override is not None else spec["channels"]
-    return _dispatch(csv_path, spec["label"], channels, q_range, plots, ipulse,
-                     t_cut, dt_window, calib, emax, split_runs,
-                     bins_q=bins_q, bins_q_2d=bins_q_2d,
-                     bins_t=bins_t, bins_h=bins_h, bins_2d=bins_2d,
-                     output_dir=output_dir)
-
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Analyze deconvolution hit results")
-    parser.add_argument("--preset", choices=list(PRESETS.keys()) + ["all"],
-                        default="all",
-                        help="Which preset CSV to analyze (default: all presets that exist)")
-    parser.add_argument("--csv", type=Path, default=None,
-                        help="Analyze an arbitrary CSV instead of a preset. "
-                             "Label defaults to the parent folder name.")
-    parser.add_argument("--plot", choices=PLOT_CHOICES, nargs="+", default=["all"],
-                        help="Which plot(s) to produce. Repeatable. Default: all.")
-    parser.add_argument("--xmin", type=float, default=None, help="Charge axis lower limit")
-    parser.add_argument("--xmax", type=float, default=None, help="Charge axis upper limit")
-    parser.add_argument("--chan",  type=int,   default=None, nargs="+",
-                        help="Filter to specific channel(s); overrides preset default")
-    parser.add_argument("--ipulse", type=int, default=None,
-                        help="Filter to hits with this ipulse value (e.g. 0 for source peak)")
-    parser.add_argument("--t-cut-lo", type=float, default=None,
-                        help="Lower edge of the time-cut charge histogram window [ns] (default: 500)")
-    parser.add_argument("--t-cut-hi", type=float, default=None,
-                        help="Upper edge of the time-cut charge histogram window [ns] (default: 800)")
-    parser.add_argument("--dt-window", type=float, default=None,
-                        help="For ch1_vs_ch2: tighten to |t_ch1 − t_ch2| ≤ dt [ns] "
-                             "(default: no Δt cut)")
-    parser.add_argument("--calib-ch1", type=float, default=None,
-                        help="Ch1 calibration slope [keV per charge unit]. "
-                             "If given together with --calib-ch2, ch1_vs_ch2 is "
-                             "drawn on a keV/keV axis with 511 & 1275 keV lines.")
-    parser.add_argument("--calib-ch2", type=float, default=None,
-                        help="Ch2 calibration slope [keV per charge unit].")
-    parser.add_argument("--emax", type=float, default=1500.0,
-                        help="Upper axis limit [keV] for the ch1_vs_ch2 plot "
-                             "when calibrated (default: 1500 keV, matching the "
-                             "reference Na22 HV=1.4 kV figure)")
-    parser.add_argument("--no-split-runs", action="store_true",
-                        help="Pool all runs into a single plot set. Default is "
-                             "to produce a separate plot suite per run.")
-    # ── Binning ──
-    parser.add_argument("--bins", type=int, default=100,
-                        help="Number of bins on the charge axis for the 1D "
-                             "histograms (plot_charge, plot_charge_tcut). "
-                             "Default: 100.")
-    parser.add_argument("--bins-2d-q", type=int, default=50,
-                        help="Charge-axis bins for 2D plots charge_vs_{time,height}. "
-                             "Default: 50 (fewer than 1D on purpose — less noisy).")
-    parser.add_argument("--bins-t", type=int, default=120,
-                        help="Time-axis bins for charge_vs_time. Default: 120.")
-    parser.add_argument("--bins-h", type=int, default=80,
-                        help="Height-axis bins for charge_vs_height. Default: 80.")
-    parser.add_argument("--bins-ch1ch2", "--bins-2d", type=int, default=80,
-                        dest="bins_ch1ch2",
-                        help="Bins per axis for the ch1_vs_ch2 2D plot. Default: 80. "
-                             "(--bins-2d kept as an alias for backwards compatibility.)")
-    args = parser.parse_args()
-
-    q_range = (args.xmin, args.xmax)
-    plots = tuple(args.plot)
-    t_cut = (args.t_cut_lo, args.t_cut_hi)
-    split_runs = not args.no_split_runs
-
-    # Build per-channel calibration dict (only applied to ch1_vs_ch2)
-    calib = None
-    if args.calib_ch1 is not None and args.calib_ch2 is not None:
-        calib = {1: args.calib_ch1, 2: args.calib_ch2}
-    elif (args.calib_ch1 is not None) ^ (args.calib_ch2 is not None):
-        print("[warn] need BOTH --calib-ch1 and --calib-ch2 to enable keV axes; "
-              "ignoring partial calibration.")
-
-    bin_kwargs = dict(bins_q=args.bins, bins_q_2d=args.bins_2d_q,
-                      bins_t=args.bins_t, bins_h=args.bins_h,
-                      bins_2d=args.bins_ch1ch2)
-
-    if args.csv is not None:
-        if not args.csv.exists():
-            print(f"ERROR: --csv path not found: {args.csv}")
-            raise SystemExit(1)
-        label = args.csv.parent.name
-        channels = args.chan if args.chan else None
-        _dispatch(args.csv, label, channels, q_range, plots, args.ipulse,
-                  t_cut, args.dt_window, calib, args.emax, split_runs,
-                  **bin_kwargs)
-    else:
-        targets = list(PRESETS.keys()) if args.preset == "all" else [args.preset]
-        ran_any = False
-        for name in targets:
-            if PRESETS[name]["csv"].exists():
-                ran_any = True
-                _run_preset(name, q_range, plots, args.ipulse, args.chan, t_cut,
-                            dt_window=args.dt_window, calib=calib,
-                            emax=args.emax, split_runs=split_runs,
-                            **bin_kwargs)
-
-        if not ran_any:
-            print("No CSV files found for the selected preset(s). "
-                  "Run the deconvolution first, or pass --csv <path>.")

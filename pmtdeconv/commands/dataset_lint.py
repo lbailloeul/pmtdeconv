@@ -44,6 +44,9 @@ def run(args: argparse.Namespace) -> int:
     if ds.dt_ns != "auto" and not (
             isinstance(ds.dt_ns, (int, float)) and ds.dt_ns > 0):
         errors.append(f"dt_ns {ds.dt_ns!r} must be a positive number or 'auto'")
+    if ds.format == "flat" and ds.dt_ns == "auto":
+        errors.append("dt_ns is missing or 'auto'; flat files carry no sample "
+                      "spacing, so set dt_ns to a number")
     if ds.branch_pattern != "auto" and (
             not isinstance(ds.branch_pattern, list) or not ds.branch_pattern):
         errors.append(

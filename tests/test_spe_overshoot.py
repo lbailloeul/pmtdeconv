@@ -8,7 +8,7 @@ leaves the overshoot columns NaN.
 """
 import numpy as np
 
-from pmtdeconv.utils import spe_overshoot
+from pmtdeconv.core.kernels import spe_overshoot
 from pmtdeconv.pipeline.template_build_impl import (
     biexp_smeared, biexp_overshoot_smeared, fit_stacked, PK_CENTER, N_SAMP,
 )

@@ -17,15 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Re-exported for backwards compatibility: ``commands.area`` and
-# ``commands.tune_cosine`` do ``from ...process_area import process_run,
-# FALLBACK_TEMPLATE``. The canonical definition now lives in pipeline.template.
-from pmtdeconv.pipeline.pipeline import (  # noqa: F401
-    AreaMode,
-    FALLBACK_TEMPLATE,
-    _next_pow2,
-    run_area,
-)
+from pmtdeconv.pipeline.pipeline import AreaMode, run_area
 
 STEP = 500    # uproot.iterate chunk size (events), flat format
 # Nested-cycle resolution + flat/object waveform iteration now live in
@@ -110,7 +102,7 @@ def process_run(root_path, dt_ns, sig_start, sig_end, n_intervals,
                 *, polarity: int = 1, measure_width: bool = False,
                 gain=None, pe_band=(0.0, 20.0),
                 in_regime_only: bool = False,
-                entry_keep=None):
+                entry_keep=None, tree_name: str = "waveforms"):
     """For every trigger, deconvolve each channel and integrate over
     ``[sig_start, sig_end]``. Returns a DataFrame with columns
     ``run, cycle, entry, branch, interval, area, peak_height[, width_ns]``.
@@ -147,7 +139,7 @@ def process_run(root_path, dt_ns, sig_start, sig_end, n_intervals,
         for rec in iter_flat_run(
             str(root_path), run, dt_ns=dt_ns, polarity=polarity,
             branches=(list(branches_keep) if branches_keep else None),
-            entry_stop=entry_stop, step_size=STEP,
+            entry_stop=entry_stop, step_size=STEP, tree_name=tree_name,
         ):
             if entry_keep is not None and rec.entry not in entry_keep:
                 continue

@@ -21,7 +21,7 @@ branches:
 - d0_ch2
 dt_ns: 0.5051
 polarity: 1
-cosine_cutoff_mhz: 450.0
+cosine_cutoff_mhz: 75.0   # passes only the 61.9 MHz fs/32 DRS4 line, at 0.27 gain
 spe_band:
 - 50.0
 - 200.0

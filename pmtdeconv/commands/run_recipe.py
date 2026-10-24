@@ -10,8 +10,9 @@ from pmtdeconv import PROJECT_ROOT
 
 RECIPES = {
     "na22-timewalk": (
-        "Run raw-area extraction, hit reconstruction, and the timewalk scan "
-        "for Na22 Run 65213 using the stable timewalk preset."
+        "Raw CFD-20 timing plus raw area, then the timewalk scan for Na22 "
+        "Run 65213 — the E41473 benchmark. No deconvolution: the run is "
+        "mostly saturated."
     ),
     "na22-energy": (
         "Render the four-method Na22 energy comparison for Run 65212."
@@ -35,6 +36,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         dest="area_file",
         default=None,
         help="Exact DRSprocessing ROOT FILE for na22-timewalk.",
+    )
+    parser.add_argument(
+        "--cfd-frac",
+        dest="cfd_frac",
+        type=float,
+        default=None,
+        help="CFD fraction for na22-timewalk's raw timing (raw-area mqana; "
+             "default there 0.2).",
     )
     parser.add_argument(
         "--proc-file",
@@ -89,6 +98,7 @@ def _base_common(args: argparse.Namespace,
         ("data_root", "--data-root"),
         ("tree", "--tree"),
         ("dt_ns", "--dt-ns"),
+        ("polarity", "--polarity"),
         ("out_suffix", "--out-suffix"),
         ("log_level", "--log-level"),
     )
@@ -98,11 +108,25 @@ def _base_common(args: argparse.Namespace,
 
     if hasattr(args, "branches"):
         argv += ["--branches", *map(str, args.branches)]
-    if getattr(args, "hash_inputs", False):
-        argv.append("--hash-inputs")
+    hash_inputs = getattr(args, "hash_inputs", None)
+    if hash_inputs is not None:
+        argv.append("--hash-inputs" if hash_inputs else "--no-hash-inputs")
     if getattr(args, "dry_run", False):
         argv.append("--dry-run")
     return argv
+
+
+def _without(argv: List[str], *flags: str) -> List[str]:
+    """``argv`` minus each ``flag`` and its single value."""
+    out, skip = [], False
+    for a in argv:
+        if skip:
+            skip = False
+        elif a in flags:
+            skip = True
+        else:
+            out.append(a)
+    return out
 
 
 def _recipe_root(args: argparse.Namespace,
@@ -134,41 +158,35 @@ def _run_na22_timewalk(args: argparse.Namespace) -> int:
         raise SystemExit("na22-timewalk currently accepts exactly one run.")
     run_number = runs[0]
     root = _recipe_root(args, args.recipe, run_number)
+    timing_dir = root / "raw-timing"
     area_dir = root / "raw-area"
-    hits_dir = root / "hits"
     timewalk_dir = root / "timewalk"
-    common = _base_common(
-        args,
-        dataset="na22",
-        runs=runs,
-        preset="na22-timewalk",
-    )
+    common = _base_common(args, dataset="na22", runs=runs)
 
-    area_argv = [
-        "raw-area", args.raw_source, *common,
-        "--out-dir", str(area_dir),
-    ]
-    if args.raw_source == "drs" and args.area_file:
-        area_argv += ["--file", args.area_file]
-    _execute("raw area", area_argv)
+    # Run 65213 is ~86% saturated on CH1, which the deconvolution drops, so
+    # Δt comes from raw CFD-20 (1.56 vs 1.76 ns for STFT, 2026-10-21).
+    timing_argv = ["raw-area", "mqana", *common, "--out-dir", str(timing_dir)]
+    if args.cfd_frac is not None:
+        timing_argv += ["--cfd-frac", str(args.cfd_frac)]
+    _execute("raw timing", timing_argv)
+    if args.raw_source == "drs":
+        area_argv = ["raw-area", "drs", *_without(common, "--polarity", "--dt-ns"),
+                     "--out-dir", str(area_dir)]
+        if args.area_file:
+            area_argv += ["--file", args.area_file]
+        _execute("raw area", area_argv)
+        area_csv = area_dir / f"area_drs_run{run_number}.csv"
+    else:
+        area_csv = timing_dir / f"area_mqana_run{run_number}.csv"
+    timing_csv = timing_dir / f"raw_timing_run{run_number}.csv"
 
-    _execute(
-        "hit reconstruction",
-        ["hits", *common, "--out-dir", str(hits_dir)],
-    )
-
-    area_csv = area_dir / f"area_{args.raw_source}_run{run_number}.csv"
-    from pmtdeconv.io.deconv_pulse import DECONV_PULSE_CSV
-    pulse_csv = hits_dir / DECONV_PULSE_CSV
-    # Belt-and-suspenders: the raw-area step now raises (with actionable
-    # guidance) when its input is missing, so we normally abort before here.
-    # But guard against a raw-area step that ran yet produced no CSV, so the
-    # recipe stops with a clear message instead of cascading into the
-    # downstream "Could not resolve --area-csv".
-    if not getattr(args, "dry_run", False) and not area_csv.exists():
+    # Guard against a raw step that ran yet produced no CSV, so the recipe
+    # stops with a clear message instead of cascading into timewalk.
+    missing = [p for p in (area_csv, timing_csv) if not p.exists()]
+    if not getattr(args, "dry_run", False) and missing:
         raise SystemExit(
-            f"raw-area ({args.raw_source}) produced no output for run "
-            f"{run_number} (expected {area_csv}).\n"
+            f"raw-area produced no output for run {run_number} "
+            f"(expected {', '.join(map(str, missing))}).\n"
             f"  The raw-area step likely couldn't find its input file — see the "
             f"error above, or point at your data with --data-root <dir> "
             f"(or $PMTDECONV_DATA_ROOT).")
@@ -177,7 +195,8 @@ def _run_na22_timewalk(args: argparse.Namespace) -> int:
         [
             "timewalk", "run", *common,
             "--area-csv", str(area_csv),
-            "--hits-csv", str(pulse_csv),
+            "--hits-csv", str(timing_csv),
+            "--time-col", "t_cfd",
             "--out-dir", str(timewalk_dir),
         ],
     )
@@ -215,8 +234,9 @@ def _run_build_template(args: argparse.Namespace) -> int:
     ):
         if hasattr(args, attribute):
             argv += [flag, str(getattr(args, attribute))]
-    if getattr(args, "hash_inputs", False):
-        argv.append("--hash-inputs")
+    hash_inputs = getattr(args, "hash_inputs", None)
+    if hash_inputs is not None:
+        argv.append("--hash-inputs" if hash_inputs else "--no-hash-inputs")
     if getattr(args, "dry_run", False):
         argv.append("--dry-run")
     _execute("SPE template build", argv)

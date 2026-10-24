@@ -32,7 +32,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from pmtdeconv.utils import MILLIQAN_TEMPLATE, build_spe_template  # noqa: E402
+from pmtdeconv.core.kernels import MILLIQAN_TEMPLATE, build_spe_template  # noqa: E402
 
 
 def _spe_kernel(n_samp: int, dt_ns: float, branch: str) -> np.ndarray:

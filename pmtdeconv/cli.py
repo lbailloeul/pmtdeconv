@@ -140,8 +140,8 @@ REMOVED_LEAVES = {
 # `--help` doesn't have to import any command module to render its tree.
 LEAF_HELP = {
     ("run",      None):        "Run a complete, named analysis recipe.",
-    ("template", "build"):     "Per-(dataset, file, channel) stacked SPE templates.",
-    ("template", "aggregate"): "Combine per-file templates into per-channel.",
+    ("template", "build"):     "SPE templates per file, averaged per channel.",
+    ("template", "aggregate"): "Re-run the per-channel averaging on a per-file CSV.",
     ("hits",     None):        "Peak-finding reconstruction (per-hit time + charge).",
     ("area",     None):        "Whole-waveform deconvolved area per trigger.",
     ("raw-area", "mqana"):     "MQAna-style narrow-window raw area.",
@@ -151,7 +151,7 @@ LEAF_HELP = {
     ("timewalk", "gif"):       "Full animated timewalk visualization. [track 2: timing-valid through saturation]",
     ("plot",     "marginals"): "CH1-vs-CH2 area heatmap + 1D marginals.",
     ("plot",     "energy"):    "Four-method energy histograms (raw/FFT/STFT/wavelet).",
-    ("plot",     "analyze"):   "Diagnostic plots from a deconv-pulse CSV (legacy/diagnostic).",
+    ("plot",     "analyze"):   "Charge / time / height diagnostic plots from a hits CSV.",
     ("info",     None):        "Read-only introspection of registries.",
     ("config",   None):        "Show and resolve datasets, presets, and overrides.",
     ("results",  None):        "List, inspect, and locate prior CLI results.",
@@ -172,7 +172,17 @@ LEAF_HELP = {
 
 
 class CLIArgumentParser(argparse.ArgumentParser):
-    """Argument parser that adds a close-match hint for mistyped choices."""
+    """Argument parser that adds a close-match hint for mistyped choices.
+
+    Flags must be spelled out: abbreviations are off (2026-10). With them on,
+    adding a flag could silently change what an old abbreviation meant —
+    `hits --all` turned on `--allow-generic-fallback`. Subparsers inherit
+    this class, so the whole CLI is covered.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
 
     def error(self, message: str) -> None:
         match = re.search(r"invalid choice: '([^']+)' \(choose from (.+)\)", message)
@@ -370,46 +380,6 @@ def configure_logging(level: str) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-
-
-def build_parser() -> argparse.ArgumentParser:
-    """Eager parser — imports every command module so that
-    ``parse_args(['<leaf>', '--help'])`` works directly. The fast,
-    dep-light path used by ``pmtdeconv --help`` lives in :func:`main`
-    (see ``_build_root_parser``). Tests rely on this eager form.
-    """
-    parser = CLIArgumentParser(
-        prog="pmtdeconv",
-        description=_parser_description(),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--version", action="version",
-                        version=f"%(prog)s {__version__}")
-    sub = parser.add_subparsers(dest="command", required=True,
-                                metavar="<command>")
-
-    for cmd, leaves in SUBCOMMANDS.items():
-        if list(leaves.keys()) == [None]:
-            mod = importlib.import_module(f"pmtdeconv.commands.{leaves[None]}")
-            cmd_parser = sub.add_parser(cmd,
-                help=LEAF_HELP.get((cmd, None), ""))
-            add_common_args(cmd_parser)
-            mod.add_arguments(cmd_parser)
-            cmd_parser.set_defaults(_run=mod.run, _command_path=cmd)
-        else:
-            cmd_parser = sub.add_parser(cmd, help=f"{cmd} subcommands")
-            cmd_sub = cmd_parser.add_subparsers(dest="subcommand",
-                                                required=True,
-                                                metavar="<leaf>")
-            for leaf, mod_name in leaves.items():
-                mod = importlib.import_module(f"pmtdeconv.commands.{mod_name}")
-                leaf_parser = cmd_sub.add_parser(
-                    leaf, help=LEAF_HELP.get((cmd, leaf), ""))
-                add_common_args(leaf_parser)
-                mod.add_arguments(leaf_parser)
-                leaf_parser.set_defaults(_run=mod.run,
-                                         _command_path=f"{cmd} {leaf}")
-    return parser
 
 
 # Third-party scientific-stack modules pmtdeconv imports lazily. A missing one

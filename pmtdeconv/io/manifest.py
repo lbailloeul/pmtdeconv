@@ -63,8 +63,8 @@ def _stat_input(path: Path, do_hash: bool) -> Dict[str, Any]:
     if path.exists() and path.is_file():
         st = path.stat()
         entry["size_bytes"] = int(st.st_size)
-        entry["mtime_utc"] = _dt.datetime.utcfromtimestamp(
-            st.st_mtime).isoformat() + "Z"
+        entry["mtime_utc"] = _dt.datetime.fromtimestamp(
+            st.st_mtime, _dt.timezone.utc).replace(tzinfo=None).isoformat() + "Z"
         if do_hash:
             entry["sha256"] = file_sha256(path)
     else:
@@ -124,7 +124,8 @@ def write_manifest(
     Returns the path written.
     """
     git = get_git_info()
-    timestamp = _dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    timestamp = _dt.datetime.now(_dt.timezone.utc).replace(
+        tzinfo=None).isoformat(timespec="seconds") + "Z"
 
     # Convert Settings dataclass → dict, casting Path → str
     settings_dict: Dict[str, Any] = {}

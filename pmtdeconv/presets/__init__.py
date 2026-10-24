@@ -162,7 +162,9 @@ class Settings:
 
     # Pipeline / subcommand flags
     template_csv:          Optional[Path] = None
-    denoiser:              str = "wavelet"           # wavelet | stft | none
+    # stft | wavelet (experimental since 2026-10) | none. STFT became the
+    # default after the 2026-10 denoiser study.
+    denoiser:              str = "stft"
     wavelet:               str = "sym8"
     wlevel:                int = 5
     wmode:                 str = "hard"
@@ -175,7 +177,9 @@ class Settings:
     # values so behavior is unchanged when no override is supplied.
     stft_nperseg_ns:       float = 20.0
     stft_freq_cutoff_mhz:  float = 175.0
-    stft_amp_threshold:    float = 10.0
+    # 5 since 2026-10 (was 10): at 10 the STFT mask dropped low-PE pulses —
+    # 65% vs 93% found on low-PE pile-up, charge 0.76 vs 0.98 of truth.
+    stft_amp_threshold:    float = 5.0
     # Tang-2024 paper-STFT variant (2026-07-28; value renamed "absolute" ->
     # "fixed" 2026-09-18): time-COLUMN selection — keep whole STFT columns
     # whose band-limited amplitude clears a FIXED threshold (their 0.02 A.U.
@@ -186,9 +190,10 @@ class Settings:
     stft_threshold_mode:   str = "median"     # median | fixed
     stft_fixed_threshold:  Optional[float] = None
     denoise_raw:           bool = False
-    # 2026-07-28: linear (zero-padded to 2N) hits deconvolution. Default ON —
-    # bare FFT division is circular (late tails wrap into early time).
-    # `--no-fft-pad` reproduces the historical circular bytes.
+    # Linear (zero-padded to 2N) deconvolution, default ON for hits since
+    # 2026-07-28 and for area/tune since 2026-10-21 — bare FFT division is
+    # circular (late tails wrap into early time). `--no-fft-pad` reproduces
+    # the historical circular bytes.
     fft_pad:               bool = True
     snr_peak_min:          float = 5.0
     peak_distance_ns:      float = 5.0
@@ -207,13 +212,14 @@ class Settings:
     # lands in the manifest `stats`.
     veto_warn_frac:        float = 0.5
 
-    # Timewalk / scan flags (used by timewalk subcommands later)
-    bin_width_ns:          float = 0.5051
-    a_scan_step_pvs:       float = 5000.0
-    scatter_nbins:         int = 40
-
     # Named config preset (just for the manifest preset block)
     config_preset_name:    Optional[str] = None
+
+    @property
+    def explicit_branches(self) -> Optional[List[str]]:
+        """The branches the user listed, or ``None`` for auto-detect."""
+        return (list(self.branch_pattern)
+                if isinstance(self.branch_pattern, list) else None)
 
 
 def _set(settings: Settings, provenance: Dict[str, str],
@@ -393,6 +399,11 @@ def resolve_settings(args: argparse.Namespace,
         _apply_config(settings, provenance, cfg)
 
     _apply_cli(settings, provenance, args)
+    if settings.format == "flat" and settings.dt_ns == "auto":
+        raise SystemExit(
+            "dt_ns is 'auto', but auto only works for object-format files "
+            "(flat files carry no sample spacing). Set `dt_ns:` in the card "
+            "or pass --dt-ns.")
 
     if (require_data_root
             and settings.data_root is None

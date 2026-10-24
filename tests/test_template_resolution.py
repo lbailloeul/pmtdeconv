@@ -26,7 +26,11 @@ from pmtdeconv.presets.datasets import (
     CD109_STACKED_UNLOCKED_CSV,
     CD109_STACKED_UNLOCKED_NA22FMT_CSV,
 )
-from pmtdeconv.pipeline.template import Template, TemplateResolutionError
+from pmtdeconv.pipeline.template import (
+    Template, TemplateResolutionError, configured_template_csv,
+)
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 def _no_tty(monkeypatch):
@@ -191,3 +195,81 @@ def test_generic_path_loads_no_per_branch_templates():
     from types import SimpleNamespace
     from pmtdeconv.pipeline.process_hits import _templates_for_run
     assert _templates_for_run(SimpleNamespace(fit_csv=None)) == {}
+
+
+# ── the same rule for commands that load the CSV themselves ─────────────
+# `area` and the `tune` sweeps read settings.template_csv directly instead of
+# going through Template.from_settings. Until 2026-09-23 each called
+# load_template(strict=False): one warning, then the generic kernel for every
+# branch — a complete area CSV, or a declared tune winner, from the wrong
+# response function, with a manifest naming a file nobody read.
+
+def test_configured_template_csv_rule(tmp_path):
+    present = tmp_path / "spe.csv"
+    present.write_text("placeholder")
+    missing = tmp_path / "nope.csv"
+
+    assert configured_template_csv(Settings(dataset="na22")) is None
+    assert configured_template_csv(
+        Settings(dataset="na22", template_csv=present)) == present
+    with pytest.raises(TemplateResolutionError, match="nope.csv"):
+        configured_template_csv(
+            Settings(dataset="na22", template_csv=missing), {"template_csv": "cli"})
+    assert configured_template_csv(
+        Settings(dataset="na22", template_csv=missing,
+                 allow_generic_fallback=True)) is None
+    assert configured_template_csv(
+        Settings(dataset="na22", template_csv=missing, dry_run=True)) == missing
+
+
+def _card_with_missing_template(tmp_path) -> Path:
+    """`tune fom` has no --template flag, so its template comes from a card."""
+    card = tmp_path / "card.yaml"
+    card.write_text(
+        f"name: missing_template\n"
+        f"data_dir: {FIXTURES}\n"
+        f"file_glob: flattened_Run*.root\n"
+        f"format: flat\n"
+        f"tree: waveforms\n"
+        f"dt_ns: 0.5051\n"
+        f"polarity: 1\n"
+        f"template: nope.csv\n")
+    return card
+
+
+@pytest.mark.parametrize("command", [
+    ["area", "--dataset", "na22", "--data-root", str(FIXTURES), "--runs", "0"],
+    ["tune", "cosine", "--dataset", "na22"],
+    ["tune", "wavelet", "--dataset", "na22"],
+    ["tune", "stft", "--dataset", "na22"],
+    None,  # tune fom: template from a card
+], ids=["area", "tune-cosine", "tune-wavelet", "tune-stft", "tune-fom"])
+def test_missing_template_stops_area_and_tune(command, tmp_path):
+    from pmtdeconv import cli
+    out = tmp_path / "out"
+    if command is None:
+        argv = ["tune", "fom", "--dataset", str(_card_with_missing_template(tmp_path)),
+                "--runs", "0"]
+    else:
+        argv = command + ["--template", str(tmp_path / "nope.csv")]
+    with pytest.raises(SystemExit) as exc:
+        cli.main(argv + ["--out-dir", str(out)])
+    assert "SPE template not found" in str(exc.value.code)
+    assert "nope.csv" in str(exc.value.code)
+    assert not out.exists(), "must stop before writing any output"
+
+
+def test_area_generic_fallback_is_an_explicit_opt_in(tmp_path):
+    """--allow-generic-fallback lets `area` run on the generic kernel, and the
+    manifest does not claim the missing CSV as an input."""
+    import json
+    from pmtdeconv import cli
+    out = tmp_path / "out"
+    rc = cli.main(["area", "--dataset", "na22", "--data-root", str(FIXTURES),
+                   "--runs", "0", "--template", str(tmp_path / "nope.csv"),
+                   "--allow-generic-fallback", "--out-dir", str(out)])
+    assert rc == 0
+    assert (out / "areas_run0.csv").exists()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert not [i for i in manifest["inputs"] if i["role"] == "template_csv"]
+

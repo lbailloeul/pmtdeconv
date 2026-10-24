@@ -19,10 +19,10 @@ def denoise(
     wthresh_k: float = 1.0,
     # stft knobs — defaults match Settings (unified 2026-07-28; previously
     # 200 MHz / 3.0 here, so wrapper callers silently diverged from the
-    # pipeline's 175 MHz / 10.0)
+    # pipeline's 175 MHz / 10.0). Amplitude threshold 5 since 2026-10.
     stft_nperseg_ns: float = 20.0,
     stft_freq_cutoff_hz: float = 175e6,
-    stft_amp_threshold: float = 10.0,
+    stft_amp_threshold: float = 5.0,
     stft_threshold_mode: str = "median",
     stft_fixed_threshold: float | None = None,
 ) -> np.ndarray:

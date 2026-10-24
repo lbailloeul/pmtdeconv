@@ -393,19 +393,15 @@ def write_template_csv(out_dir, undershoot: bool = True,
 def write_veto_profile(out_dir) -> "Path":     # noqa: F821
     """Write the ``tang2024_hits`` file-backed veto profile.
 
-    ``benchmark_hits`` base with the post-saturation veto DISABLED
-    (sigma_mult 100): the R5912 model's AC-coupled undershoot is MODELED
-    SIGNAL that the deconvolution handles (the paper's headline point), but
-    it looks exactly like a post-saturation baseline shift to that veto —
-    which would blanket-veto every pulse after the first. No saturation
-    exists in this simulation, so the veto carries no information here.
+    The ``benchmark_hits`` thresholds under their own name, so a simulation
+    run records which profile it used.
     """
     from dataclasses import replace
     from pathlib import Path
     from pmtdeconv.presets.veto_profiles import (BENCHMARK_HITS_PROFILE,
                                                  save_veto_profile_yaml)
     prof = replace(BENCHMARK_HITS_PROFILE, name="tang2024_hits",
-                   post_sat_sigma_mult=100.0, version="tang2024-1")
+                   version="tang2024-1")
     return save_veto_profile_yaml(prof, Path(out_dir))
 
 

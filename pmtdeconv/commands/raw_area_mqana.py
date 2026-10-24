@@ -27,16 +27,17 @@ from typing import List
 # Bug-fix 5 (2026-05-30 scan): defer heavy imports until run() so
 # `pmtdeconv --help` works without uproot installed.
 
+from pmtdeconv.io.data_paths import find_run_files
 from pmtdeconv import PROJECT_ROOT
 from pmtdeconv.io.manifest import maybe_dry_run_exit, write_manifest
 from pmtdeconv.io.object_format import (
     detect_populated_channels, iter_object_run, read_dt_ns,
 )
-from pmtdeconv.core.dsp import detect_saturation_plateau
+from pmtdeconv.core.dsp import is_saturated
 from pmtdeconv.io.root_loader import select_tree_key, to_numpy2d
 from pmtdeconv.io.output_paths import raw_area_output_dir
 from pmtdeconv.io.schemas import AREA_COLUMNS
-from pmtdeconv.pipeline.area_mqana import fixed_window_area, mqana_area
+from pmtdeconv.pipeline.area_mqana import fixed_window_area, mqana_area, raw_cfd_times
 from pmtdeconv.presets import resolve_settings
 
 
@@ -55,6 +56,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                    help="Wide-window end sample (legacy mode only).")
     g.add_argument("--n-pre", type=int, default=50,
                    help="Pre-trigger samples used for baseline.")
+    g.add_argument("--cfd-frac", type=float, default=0.2,
+                   help="Constant fraction for the raw timing CSV "
+                        "(raw_timing_run<N>.csv, column t_cfd). Default 0.2: "
+                        "best timewalk resolution on Run 65213 (2026-10-21).")
     g.add_argument("--step", type=int, default=500,
                    help="uproot chunk size (events).")
 
@@ -72,8 +77,7 @@ def _plateau_saturated(w2d, polarity: int):
     pw = polarity * np.asarray(w2d, dtype=float)
     out = np.zeros(len(pw), dtype=bool)
     for j in range(len(pw)):
-        sig = float(np.nanstd(pw[j][:100])) or 1.0
-        out[j] = bool(detect_saturation_plateau(pw[j], sig)[0])
+        out[j] = is_saturated(pw[j])
     return out
 
 
@@ -117,10 +121,7 @@ def run(args: argparse.Namespace) -> int:
         # object-format LANL files use sub-run naming so we pick the
         # first match via the dataset's file_glob.
         if is_object_format:
-            candidates = sorted(data_dir.glob(
-                settings.file_glob.replace("Run<N>", f"Run{run_num}")
-                if "<N>" in settings.file_glob else settings.file_glob))
-            candidates = [p for p in candidates if str(run_num) in p.name]
+            candidates = find_run_files(data_dir, settings.file_glob, run_num)
             if not candidates:
                 print(f"[skip] no object-format ROOT matching run {run_num} "
                       f"under {data_dir}")
@@ -141,12 +142,11 @@ def run(args: argparse.Namespace) -> int:
         else:
             dt_ns = float(settings.dt_ns)
 
-        rows = []
+        rows, timing = [], []
         if is_object_format:
             # Resolve channel set
-            if isinstance(settings.branch_pattern, list):
-                branches = settings.branch_pattern
-            else:
+            branches = settings.explicit_branches
+            if branches is None:
                 branches = detect_populated_channels(root_path,
                                                      tree_name=settings.tree or "Events")
                 print(f"  Auto-detected {len(branches)} populated channels: "
@@ -181,12 +181,15 @@ def run(args: argparse.Namespace) -> int:
                             w, dt_ns, n_pre=args.n_pre,
                             window_ns=args.mqana_window_ns,
                             polarity=polarity)
+                    t_cfd = raw_cfd_times(w, dt_ns, n_pre=args.n_pre,
+                                          frac=args.cfd_frac, polarity=polarity)
                     for j in range(n_chunk):
                         rows.append((
                             run_num, 1, chunk_base + j, b, 0,
                             float("nan") if sat[j] else float(area[j]),
                             float("nan") if sat[j] else float(peak_height[j]),
                         ))
+                        timing.append((run_num, 1, chunk_base + j, b, float(t_cfd[j])))
         else:
             with uproot.open(root_path) as ufile:
                 tree_key, per_cycle_mult = select_tree_key(
@@ -230,18 +233,28 @@ def run(args: argparse.Namespace) -> int:
                                 w, dt_ns, n_pre=args.n_pre,
                                 window_ns=args.mqana_window_ns,
                                 polarity=polarity)
+                        t_cfd = raw_cfd_times(w, dt_ns, n_pre=args.n_pre,
+                                              frac=args.cfd_frac, polarity=polarity)
                         for j in range(n_chunk):
                             rows.append((
                                 run_num, cycle_num, base_entry + j, b, 0,
                                 float("nan") if sat[j] else float(area[j]),
                                 float("nan") if sat[j] else float(peak_height[j]),
                             ))
+                            timing.append((run_num, cycle_num, base_entry + j, b,
+                                           float(t_cfd[j])))
                     base_entry += n_chunk
 
         df = pd.DataFrame(rows, columns=list(AREA_COLUMNS))
         csv_path = out_dir / f"area_mqana_run{run_num}.csv"
         df.to_csv(csv_path, index=False)
         outputs_meta.append({"role": "area_mqana_csv", "path": str(csv_path)})
+        tdf = pd.DataFrame(timing, columns=["run", "cycle", "entry", "branch", "t_cfd"])
+        tdf["success"] = np.isfinite(tdf.t_cfd)
+        tdf["peak_id"] = 1.0
+        timing_path = out_dir / f"raw_timing_run{run_num}.csv"
+        tdf.to_csv(timing_path, index=False)
+        outputs_meta.append({"role": "raw_timing_csv", "path": str(timing_path)})
         # Per-channel saturation flags (2026-07-28): count NaN'd channel-rows,
         # not "events" (a single event can be clipped on one channel only).
         n_sat = int(df.area.isna().sum())

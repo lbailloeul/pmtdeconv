@@ -67,7 +67,9 @@ def _det(**kw) -> Detector:
 
 
 def test_detector_resolves_veto_profile():
-    assert _det(dataset="na22").veto_profile == "wavelet_hits"
+    # default denoiser is STFT since 2026-10 -> its profile
+    assert _det(dataset="na22").veto_profile == "stft_hits"
+    assert _det(dataset="na22", denoiser="wavelet").veto_profile == "wavelet_hits"
     assert _det(dataset="na22", denoiser="stft").veto_profile == "stft_hits"
     assert _det(dataset="na22", denoiser="none").veto_profile == "wavelet_hits"
 
@@ -193,3 +195,21 @@ def test_calibrate_scored_with_truth():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_profiles_saved_before_post_sat_removal_still_load(tmp_path):
+    """Profiles written before 2026-10-23 carry the retired post_sat_* keys;
+    they load without them, while any other unknown key is still an error."""
+    import yaml
+    from dataclasses import asdict
+    from pmtdeconv.presets.veto_profiles import (BENCHMARK_HITS_PROFILE,
+                                                 load_veto_profile_yaml)
+    old = asdict(BENCHMARK_HITS_PROFILE)
+    old.update(post_sat_window_ns=50.0, post_sat_sigma_mult=3.0, post_sat_offset_ns=20.0)
+    path = tmp_path / "old.yaml"
+    path.write_text(yaml.safe_dump(old))
+    assert load_veto_profile_yaml(path) == BENCHMARK_HITS_PROFILE
+    old["post_sat_windw_ns"] = 1.0
+    path.write_text(yaml.safe_dump(old))
+    with pytest.raises(ValueError, match="unknown field"):
+        load_veto_profile_yaml(path)

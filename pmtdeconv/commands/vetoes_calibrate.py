@@ -35,8 +35,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from pmtdeconv.io.data_paths import find_run_files
 from pmtdeconv import PROJECT_ROOT
-from pmtdeconv.core.dsp import detect_saturation_plateau
+from pmtdeconv.core.dsp import is_saturated
 from pmtdeconv.io.manifest import maybe_dry_run_exit, write_manifest
 from pmtdeconv.pipeline.calibration import ProvenanceRecord
 from pmtdeconv.presets import resolve_settings
@@ -79,8 +80,7 @@ def _iter_sample_records(settings, n_max: int):
         data_dir = (Path(settings.data_root) if settings.data_root else
                     PROJECT_ROOT.parent.parent.parent / "data" / "835_real")
         for run in runs:
-            cands = [p for p in sorted(data_dir.glob(settings.file_glob))
-                     if str(run) in p.name]
+            cands = find_run_files(data_dir, settings.file_glob, run)
             if not cands:
                 continue
             rp = cands[0]
@@ -101,7 +101,8 @@ def _iter_sample_records(settings, n_max: int):
         for run in runs:
             rp = str(data_dir / f"flattened_Run{run}.root")
             for rec in iter_flat_run(rp, run, dt_ns=dt, polarity=polarity,
-                                     entry_stop=None):
+                                     branches=settings.explicit_branches,
+                                     tree_name=settings.tree, entry_stop=None):
                 yield rec
                 count += 1
                 if count >= n_max:
@@ -146,7 +147,7 @@ def _derive(waves, base: VetoProfile, k_mad: float):
         noises.append(noise)
         raw_peaks.append(float(np.max(wave) - med))
         t_peaks.append(int(np.argmax(wave)) * dt_ns)
-        if detect_saturation_plateau(wave, noise)[0]:
+        if is_saturated(wave):
             rail += 1
 
     if n == 0:

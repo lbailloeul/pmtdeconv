@@ -23,12 +23,17 @@ import numpy as np
 import pandas as pd
 
 from pmtdeconv import PROJECT_ROOT
+from pmtdeconv.commands._tune_shared import area_denoiser
 from pmtdeconv.io.manifest import maybe_dry_run_exit, write_manifest
+from pmtdeconv.pipeline.template import (
+    add_generic_fallback_flag, configured_template_csv,
+)
 from pmtdeconv.presets import resolve_settings
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     g = parser.add_argument_group("tune fom")
+    add_generic_fallback_flag(g)
     g.add_argument("--cutoff-range", type=float, nargs=3, default=None,
                    metavar=("LO", "HI", "STEP"),
                    help="Cosine cutoff grid LO HI STEP in MHz. Default: a "
@@ -41,7 +46,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                    metavar=("LO", "HI"),
                    help="Photopeak window [lo hi] for the FoM fit (real spectra "
                         "need this to isolate the peak from Compton/pileup).")
-    g.add_argument("--denoiser", choices=("none", "wavelet"), default="wavelet",
+    g.add_argument("--denoiser", choices=("none", "wavelet"), default=None,
                    help="`none` isolates the cutoff effect; `wavelet` keeps the "
                         "default denoise (matches the area path).")
     g.add_argument("--auto-select", action="store_true",
@@ -82,6 +87,9 @@ def _default_out_dir(settings) -> Path:
 def run(args: argparse.Namespace) -> int:
     t0 = time.time()
     settings, provenance = resolve_settings(args, require_data_root=True)
+    denoiser = area_denoiser(settings, provenance)
+    # A configured-but-missing template is an error (the rule hits applies).
+    template_csv = configured_template_csv(settings, provenance)
 
     out_dir = Path(settings.out_dir or _default_out_dir(settings))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -111,7 +119,7 @@ def run(args: argparse.Namespace) -> int:
 
     from pmtdeconv.io.data_paths import resolve_run_file
     from pmtdeconv.io.templates import load_template
-    from pmtdeconv.pipeline.process_area import process_run, FALLBACK_TEMPLATE
+    from pmtdeconv.pipeline.process_area import process_run
 
     run_files = []
     for r in runs:
@@ -125,8 +133,7 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     dt_ns = float(settings.dt_ns) if settings.dt_ns != "auto" else 0.5051
-    branches_keep = (settings.branch_pattern
-                     if isinstance(settings.branch_pattern, list) else None)
+    branches_keep = settings.explicit_branches
     probe_branch = (branches_keep[0] if branches_keep else "d0_ch1")
     nsamp = _waveform_length(run_files[0][1], tree, probe_branch) or 1024
     df_mhz = 1000.0 / (nsamp * dt_ns)              # FFT bin spacing Δf = 1/(N·dt)
@@ -140,13 +147,12 @@ def run(args: argparse.Namespace) -> int:
     else:
         cutoffs = _default_cutoffs(float(settings.cosine_cutoff_mhz), df_mhz)
 
-    templates = load_template(settings.template_csv, strict=False)
-    templates.setdefault("_default", FALLBACK_TEMPLATE)
-    wavelet_arg = "none" if args.denoiser == "none" else (settings.wavelet or "sym8")
+    templates = load_template(template_csv)
+    wavelet_arg = "none" if denoiser == "none" else (settings.wavelet or "sym8")
 
     print(f"tune fom: FoM={fom_name}, {len(cutoffs)} cutoffs "
           f"[{cutoffs[0]}..{cutoffs[-1]}] MHz, {len(run_files)} run(s), "
-          f"Δf={df_mhz:.2f} MHz, denoiser={args.denoiser}")
+          f"Δf={df_mhz:.2f} MHz, denoiser={denoiser}")
 
     rows: List[dict] = []
     for cutoff in cutoffs:
@@ -160,9 +166,10 @@ def run(args: argparse.Namespace) -> int:
                 mode=settings.wmode, thresh_k=settings.wthresh_k,
                 no_trigger_amp=15.0, t_peak_min_ns=20.0,
                 afterpulse_window_ns=0.0, afterpulse_height_ratio=5.0,
-                fft_pad=False, wrap_ratio=0.5, wrap_abs_k=0.0,
+                fft_pad=bool(settings.fft_pad), wrap_ratio=0.5, wrap_abs_k=0.0,
                 entry_stop=settings.entry_stop, templates=templates,
-                branches_keep=branches_keep, polarity=int(settings.polarity))
+                branches_keep=branches_keep, polarity=int(settings.polarity),
+                tree_name=settings.tree)
             frames.append(df[df["interval"] >= 0])
         alldf = pd.concat(frames, ignore_index=True)
         for branch, grp in alldf.groupby("branch"):

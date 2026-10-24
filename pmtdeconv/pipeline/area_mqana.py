@@ -114,3 +114,24 @@ def fixed_window_area(
     # peak in the fixed window
     peak_height = signal[:, signal_start:signal_end].max(axis=1)
     return area, peak_height
+
+
+def raw_cfd_times(
+    wave2d: np.ndarray,
+    dt_ns: float,
+    *,
+    n_pre: int = 50,
+    frac: float = 0.2,
+    polarity: int = +1,
+) -> np.ndarray:
+    """Raw (pre-deconvolution) constant-fraction crossing time per event, in ns.
+
+    Same baseline and polarity convention as :func:`mqana_area`. The rising
+    edge stays measurable on clipped pulses (the fraction is of the clipped
+    max), so this is the timing source for saturated-era runs.
+    """
+    from pmtdeconv.core.peaks import cfd_time
+    signal, _ = baseline_subtract(np.asarray(wave2d, dtype=float), n_pre=n_pre)
+    signal = polarity * signal
+    t = np.arange(signal.shape[1]) * dt_ns
+    return np.array([cfd_time(s, int(np.argmax(s)), t, frac=frac) for s in signal])

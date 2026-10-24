@@ -229,10 +229,16 @@ def baseline_noise_bestwindow(
     raise RuntimeError("No baseline window found")
 
 
-def sliding_local_mean(wave, window_bins):
-    """Sliding-window mean for detecting post-saturation baseline shifts."""
-    kernel = np.ones(window_bins) / window_bins
-    return np.convolve(wave, kernel, mode='same')
+def sample_noise_sigma(x) -> float:
+    """Sample-to-sample noise: robust σ of the first differences / √2.
+
+    Blind to slow baseline structure (tails or recovery of earlier pulses,
+    pile-up bumps), which inflates a plain σ of the same window."""
+    d = np.diff(np.asarray(x, dtype=float))
+    d = d[np.isfinite(d)]
+    if d.size == 0:
+        return 0.0
+    return float(1.4826 * np.median(np.abs(d - np.median(d))) / np.sqrt(2.0))
 
 
 def _longest_true_run(mask: np.ndarray) -> int:
@@ -248,7 +254,8 @@ def _longest_true_run(mask: np.ndarray) -> int:
 
 def detect_saturation_plateau(wave, noise_sigma, *,
                               k_samples: int = 10,
-                              eps_sigma_frac: float = 0.5):
+                              eps_sigma_frac: float = 0.5,
+                              rel_tol: float = 1e-4):
     """Detect ADC saturation by its flat-plateau signature — universal, no rail.
 
     A clipped pulse pins to the digitizer rail, producing a run of (near-)
@@ -283,7 +290,11 @@ def detect_saturation_plateau(wave, noise_sigma, *,
     if finite.size == 0:
         return False, 0
     vmax = float(finite.max())
-    eps = max(eps_sigma_frac * float(noise_sigma), 1e-9)
+    # A digital clip repeats the rail value exactly (950.0 mV on our DRS4), so
+    # the tolerance is also capped at rel_tol·|vmax|: 0.5σ alone let the
+    # rounded top of a broad few-mV pulse count as a plateau whenever σ was
+    # inflated by slow baseline wander (27% of Cd109 CH2, 2026-10-23).
+    eps = max(min(eps_sigma_frac * float(noise_sigma), rel_tol * abs(vmax)), 1e-9)
     near = np.abs(w - vmax) < eps        # NaN -> False -> breaks the run
     run_len = _longest_true_run(near)
     return run_len >= int(k_samples), run_len
@@ -292,6 +303,14 @@ def detect_saturation_plateau(wave, noise_sigma, *,
 # ═══════════════════════════════════════════════════════════════
 # Wavelet denoiser (used by Na22 deconvolution scripts)
 # ═══════════════════════════════════════════════════════════════
+def is_saturated(wave) -> bool:
+    """The one clipping rule hits, area, raw-area, plot energy and vetoes
+    calibrate share: a plateau at the extreme, noise from the first 100
+    samples (~50 ns at na22 dt, ~143 ns at cd109)."""
+    noise0 = float(np.nanstd(wave[:100])) or 1.0
+    return bool(detect_saturation_plateau(wave, noise0)[0])
+
+
 def wavelet_denoise(
     u: np.ndarray,
     wavelet: str = "sym6",

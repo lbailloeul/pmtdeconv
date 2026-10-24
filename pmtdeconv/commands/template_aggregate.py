@@ -1,8 +1,9 @@
 """``pmtdeconv template aggregate`` — combine per-file templates into per-channel.
 
-Delegates to ``aggregate_spe_templates.main``. Reads the CSV produced
-by ``pmtdeconv template build`` and writes weighted-average per-channel
-templates + an overlay PDF.
+``template build`` runs this step itself since 2026-10; use this command to
+re-aggregate an existing per-file CSV (e.g. after editing it, or one built
+with ``--no-aggregate``). Writes weighted-average per-channel templates +
+an overlay figure.
 """
 from __future__ import annotations
 
@@ -24,6 +25,23 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         "spe_templates_perfile.csv).")
 
 
+def aggregate(out_dir: Path) -> list:
+    """Aggregate ``out_dir/spe_templates_perfile.csv`` into per-channel
+    templates written beside it. Returns the manifest output entries.
+    Shared by ``template build`` (automatic) and ``template aggregate``."""
+    from pmtdeconv.pipeline import template_aggregate_impl as impl
+    orig = impl.OUT
+    impl.OUT = out_dir           # the impl reads + writes under OUT
+    try:
+        impl.main()
+    finally:
+        impl.OUT = orig
+    return [{"role": "per_channel_csv",
+             "path": str(out_dir / "spe_templates_perchannel.csv")},
+            {"role": "overlay_pdf",
+             "path": str(out_dir / "aggregated_templates.png")}]
+
+
 def run(args: argparse.Namespace) -> int:
     t0 = time.time()
     settings, provenance = resolve_settings(args, require_data_root=False)
@@ -36,15 +54,9 @@ def run(args: argparse.Namespace) -> int:
                           provenance=provenance, out_dir=out_dir,
                           duration_seconds=time.time() - t0):
         return 0
-    from pmtdeconv.pipeline import template_aggregate_impl as legacy  # noqa
-
     # Bug-fix 3 + 4 (2026-05-30 scan): respect --out-dir AND --input-csv.
-    # The impl's main() reads ``OUT / "spe_templates_perfile.csv"`` and
-    # writes everything under ``OUT``. We patch OUT to direct writes,
-    # and patch _read_input_csv (helper added below) so --input-csv
-    # actually replaces the input source.
-    _orig_out = legacy.OUT
-    legacy.OUT = out_dir
+    # The impl reads ``out_dir/spe_templates_perfile.csv``; an --input-csv
+    # elsewhere is staged to that name first.
     input_csv_override = args.input_csv
     if input_csv_override is not None:
         # The impl uses pandas.read_csv; the simplest swap is a
@@ -62,17 +74,7 @@ def run(args: argparse.Namespace) -> int:
             raise SystemExit(f"--input-csv {input_csv_override} not found")
 
     print("Delegating to aggregate_spe_templates.main()")
-    try:
-        legacy.main()
-    finally:
-        legacy.OUT = _orig_out
-
-    outputs_meta = [
-        {"role": "per_channel_csv",
-         "path": str(out_dir / "spe_templates_perchannel.csv")},
-        {"role": "overlay_pdf",
-         "path": str(out_dir / "aggregated_templates.png")},
-    ]
+    outputs_meta = aggregate(out_dir)
     manifest_path = (Path(settings.manifest_path)
                      if settings.manifest_path else (out_dir / "manifest.json"))
     write_manifest(

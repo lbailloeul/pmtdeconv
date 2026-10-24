@@ -235,3 +235,25 @@ def scan_timewalk(
         width=width,
         windows=windows,
     )
+
+
+def no_events_message(scan: "TimewalkScan", a_ref, area_units: str = "nVs") -> str:
+    """The error for a reference window that selects no events.
+
+    Until 2026-10 this case wrote an empty summary and plot and exited 0 —
+    e.g. `run na22-timewalk --raw-source mqana`, whose MQAna narrow-window
+    areas saturate near 34 nVs on Run 65213, below the 100-110 nVs window.
+    """
+    scale = 1e-3 if area_units == "nVs" else 1.0
+    a = np.asarray(scan.a_ref, dtype=float)
+    a = a[np.isfinite(a)]
+    span = (f"{a.min() * scale:.1f} to {a.max() * scale:.1f} {area_units}"
+            if a.size else "nothing: no event has both channels")
+    return (f"\nNo events in the reference window --a-ref "
+            f"{a_ref[0] * scale:g} {a_ref[1] * scale:g} {area_units}; "
+            f"the reference-channel areas span {span}.\n"
+            f"  Area sources use different scales (raw-area drs vs mqana vs "
+            f"area), and MQAna narrow-window areas saturate early. Choose an "
+            f"--a-ref window inside that span, or use the area source the "
+            f"window was defined on.\n")
+

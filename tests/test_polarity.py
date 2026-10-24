@@ -27,7 +27,7 @@ OBJECT_ROOT = FIXTURE_DIR / "MilliQan_Run835.99_triple.root"
 from pmtdeconv.pipeline.event_source import (   # noqa: E402
     _apply_polarity, iter_flat_run, iter_object_run_events,
 )
-from pmtdeconv.utils import DTYPE                # noqa: E402
+from pmtdeconv.core.kernels import DTYPE         # noqa: E402
 
 
 def test_apply_polarity_is_the_single_flip_point():

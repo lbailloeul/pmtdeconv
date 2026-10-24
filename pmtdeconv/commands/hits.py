@@ -20,11 +20,12 @@ import argparse
 import time
 from pathlib import Path
 
-from pmtdeconv import PROJECT_ROOT
+from pmtdeconv.io.data_paths import find_run_files
 from pmtdeconv.io.deconv_pulse import DECONV_PULSE_CSV, DECONV_PULSE_ROLE
 from pmtdeconv.io.manifest import maybe_dry_run_exit, write_manifest
-from pmtdeconv.io.output_paths import pulse_output_dir
+from pmtdeconv.io.output_paths import hits_output_dir
 from pmtdeconv.pipeline.detector import Detector
+from pmtdeconv.pipeline.template import add_generic_fallback_flag
 from pmtdeconv.presets import resolve_settings
 
 
@@ -32,15 +33,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     g = parser.add_argument_group("hits")
     g.add_argument("--template", type=str, default=None,
                    help="SPE template CSV path. Default: dataset's preset.")
-    g.add_argument("--allow-generic-fallback", dest="allow_generic_fallback",
-                   action="store_true", default=None,
-                   help="When no per-channel template CSV is configured and the "
-                        "PMT type is uncatalogued, use the generic MilliQan "
-                        "fallback template instead of erroring (loudly logged). "
-                        "Restores the pre-step-3 silent-fallback behavior.")
-    g.add_argument("--denoiser", choices=("wavelet", "stft", "none"),
+    add_generic_fallback_flag(g)
+    g.add_argument("--denoiser", choices=("stft", "wavelet", "none"),
                    default=None,
-                   help="Post-deconv denoiser (default: wavelet).")
+                   help="Post-deconvolution denoiser. Default: stft. wavelet "
+                        "is experimental since the 2026-10 denoiser study "
+                        "(STFT measured charge best on every test set).")
     g.add_argument("--snr-peak-min", type=float, default=None,
                    help="Peak-finder SNR threshold (default 5.0).")
     g.add_argument("--peak-distance-ns", type=float, default=None,
@@ -217,12 +215,30 @@ def _build_diagnostic_sink(settings, out_dir, diag_events):
     return sink
 
 
+def _data_inputs(settings, runs) -> list:
+    """Manifest entries for the run files the readers open, found the same
+    way they find them (flat: ``resolve_run_file``; object: ``file_glob``)."""
+    from pmtdeconv.io.data_paths import resolve_run_file
+    data_dir = Path(settings.data_root)
+    entries = []
+    for run in runs:
+        if settings.format == "object":
+            glob = settings.file_glob or "MilliQan_Run*_triple.root"
+            found = find_run_files(data_dir, glob, run)
+            path = found[0] if found else None
+        else:
+            path = resolve_run_file(data_dir, run, kind="flat")
+        if path is not None:
+            entries.append({"role": "root_data", "path": str(path)})
+    return entries
+
+
 def _run_stft(settings, provenance, t0, detector, diag_events) -> int:
     """STFT-denoiser path. Calls ``process_hits.process_run_stft``
     (the unified hit-finder with ``STFT_PROFILE``) with the resolved
     :class:`Detector`.
     """
-    out_dir = settings.out_dir or pulse_output_dir(settings, "stft")
+    out_dir = settings.out_dir or hits_output_dir(settings)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     detector.out_dir = str(out_dir)
@@ -252,14 +268,7 @@ def _run_stft(settings, provenance, t0, detector, diag_events) -> int:
     if settings.template_csv and Path(settings.template_csv).exists():
         inputs_meta.append({"role": "template_csv",
                             "path": str(settings.template_csv)})
-    for run_num in (settings.runs or []):
-        if settings.data_root:
-            rp = Path(settings.data_root) / f"flattened_Run{run_num}.root"
-        else:
-            rp = (PROJECT_ROOT.parent.parent.parent
-                  / "data" / "Na22_lab" / f"flattened_Run{run_num}.root")
-        if rp.exists():
-            inputs_meta.append({"role": "root_data", "path": str(rp)})
+    inputs_meta += _data_inputs(settings, detector.runs)
 
     manifest_path = (Path(settings.manifest_path)
                      if settings.manifest_path else (out_dir / "manifest.json"))
@@ -289,6 +298,8 @@ def run(args: argparse.Namespace) -> int:
     settings, provenance = resolve_settings(args)
     from pmtdeconv.io.banner import print_run_banner
     print_run_banner("hits", settings, provenance)
+    if not settings.runs and not settings.dry_run:
+        raise SystemExit("--runs is required (got an empty list).")
     diag_events = list(getattr(args, "diagnostic_events", None) or [])
 
     # Single resolution point: Settings -> Detector (kills _build_legacy_args).
@@ -297,7 +308,15 @@ def run(args: argparse.Namespace) -> int:
     detector = Detector.from_settings(settings, provenance, mode="hits")
     _require_gain_for_gate(detector)
 
-    if settings.denoiser == "stft":
+    if settings.denoiser == "wavelet":
+        print("[experimental] wavelet denoiser — STFT is the default since the "
+              "2026-10 denoiser study (STFT reconstructed charge best on every "
+              "simulated test set). Wavelet left less timewalk on the Run 65213 "
+              "benchmark and remains usable.")
+
+    # Flat STFT has its own reader; object-format files (LANL) go through
+    # process_run_object for every denoiser.
+    if settings.denoiser == "stft" and settings.format != "object":
         return _run_stft(settings, provenance, t0, detector, diag_events)
 
     # PR 2 / decision 9: process_run lives in pmtdeconv.pipeline now.
@@ -308,14 +327,11 @@ def run(args: argparse.Namespace) -> int:
 
     is_object_format = (settings.format == "object")
 
-    # Object-format dt_ns=="auto": resolve from the first matching ROOT file
-    # (per-run; LANL sub-runs differ). Placeholder 1.25 matches legacy.
-    if settings.dt_ns == "auto":
-        detector.dt_ns = 1.25
-
     out_dir = (Path(settings.out_dir) if settings.out_dir else
-               pulse_output_dir(settings, "wavelet"))
+               hits_output_dir(settings))
     out_dir.mkdir(parents=True, exist_ok=True)
+    # The readers write here, and so does the manifest: one directory.
+    detector.out_dir = str(out_dir)
 
     if maybe_dry_run_exit(subcommand="hits", settings=settings,
                           provenance=provenance, out_dir=out_dir,
@@ -325,39 +341,17 @@ def run(args: argparse.Namespace) -> int:
     diagnostic_sink = _build_diagnostic_sink(settings, out_dir, diag_events)
 
     if is_object_format:
-        if settings.dt_ns == "auto":
-            data_dir = Path(settings.data_root) if settings.data_root else (
-                PROJECT_ROOT.parent.parent.parent / "data" / "835_real")
-            for run_num in detector.runs:
-                cands = sorted(data_dir.glob(settings.file_glob))
-                cands = [p for p in cands if str(run_num) in p.name]
-                if cands:
-                    from pmtdeconv.io.object_format import read_dt_ns
-                    detector.dt_ns = read_dt_ns(
-                        cands[0], tree_name=settings.tree or "Events")
-                    print(f"  dt_ns (auto-detected): {detector.dt_ns} ns")
-                    break
-        detector.out_dir = str(out_dir)
         print("Delegating to process_run_object (object format)")
         acc = process_run_object(detector, diagnostic_sink=diagnostic_sink)
     else:
-        # Flat path: only pin out_dir when explicit (legacy parity — otherwise
-        # process_run computes its own default directory).
-        if settings.out_dir is not None:
-            detector.out_dir = str(settings.out_dir)
-        print(f"Delegating to legacy process_run "
-              f"(out_suffix={detector.out_suffix!r})")
+        print("Delegating to process_run (flat format)")
         acc = process_run(detector, diagnostic_sink=diagnostic_sink)
 
     inputs_meta = []
     if settings.template_csv and Path(settings.template_csv).exists():
         inputs_meta.append({"role": "template_csv",
                             "path": str(settings.template_csv)})
-    for run_num in detector.runs:
-        rp = (PROJECT_ROOT.parent.parent.parent
-              / "data" / "Na22_lab" / f"flattened_Run{run_num}.root")
-        if rp.exists():
-            inputs_meta.append({"role": "root_data", "path": str(rp)})
+    inputs_meta += _data_inputs(settings, detector.runs)
 
     outputs_meta = [
         {"role": DECONV_PULSE_ROLE,

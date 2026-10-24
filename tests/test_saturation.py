@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-"""Saturation = a data-quality FLAG, detected by the flat clipped-top plateau.
+"""Saturation detection: the flat clipped-top plateau.
 
-S5 replaced the fixed ``wave.max() >= sat_thresh`` gate (which needed each
-detector's rail and DROPPED the event) with a universal plateau detector
-(``core.dsp.detect_saturation_plateau``: a run of >=K samples within a sub-noise
-epsilon of vmax). Saturated events are now KEPT and carry ``saturated=True``,
-their timing recovered; only charge is unreliable (cut downstream via the flag).
-
-Two test layers:
-- unit tests of the detector (synthetic arrays — no fixtures);
-- an end-to-end contract test that level5's clipped events are kept + flagged at
-  DEFAULT (no --sat-thresh).
+``core.dsp.detect_saturation_plateau`` flags a run of >=K samples within a
+sub-noise epsilon of vmax. Since 2026-10-23 a flagged waveform is dropped
+before deconvolution (``hits``/``area`` reason ``saturated``; contract tested
+in ``test_spe_scope.py``). These are unit tests of the detector itself.
 
 Detector parameters (validated on real na22 Run 65213, hard 950 mV clip):
 ε = 0.5σ, K = 10. K=10 sits between the worst rounded-peak false positive (the
@@ -20,25 +14,12 @@ real clip — with zero rail knowledge.
 """
 from __future__ import annotations
 
-import subprocess
 import sys
-from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 
-THIS_DIR = Path(__file__).resolve().parent
-FIXTURE_DIR = THIS_DIR / "fixtures"
-REPO_ROOT = THIS_DIR.parent
-PYBIN = sys.executable
-
-sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(FIXTURE_DIR))
-
-from pmtdeconv.core.dsp import detect_saturation_plateau  # noqa: E402
-
-DT_NS = 0.5051
+from pmtdeconv.core.dsp import detect_saturation_plateau
 
 
 # ─── unit tests: the universal plateau detector (no rail needed) ────
@@ -70,6 +51,21 @@ def test_plateau_subnoise_eps_required():
     assert not detect_saturation_plateau(w, 2.0, eps_sigma_frac=0.5)[0]
 
 
+def test_plateau_ignores_broad_small_pulse():
+    """Real Cd109 CH2: a broad ~9 mV single-PE pulse whose sample jitter is
+    ~0.4 mV, while the pre-trigger σ the caller passes is 3.7 mV (slow
+    baseline wander). Its rounded top stays within 0.5σ of the max for >10
+    samples, yet it is not clipped and must not be dropped as saturated
+    (2026-10-23 regression: 27% of Cd109 CH2 waveforms were)."""
+    x = np.arange(1024)
+    rng = np.random.default_rng(3)
+    hits = 0
+    for _ in range(50):
+        w = 16.0 + 9.0 * np.exp(-0.5 * ((x - 300) / 18.0) ** 2) + rng.normal(0.0, 0.4, 1024)
+        hits += detect_saturation_plateau(w, 3.7)[0]
+    assert hits == 0
+
+
 def test_plateau_below_k_not_saturated():
     w = np.full(200, 5.0)
     w[100:102] = 950.0                       # only 2 samples at the rail
@@ -86,52 +82,6 @@ def test_plateau_handles_nan_cells():
     w[115] = np.nan
     sat, _run = detect_saturation_plateau(w, 1.0)
     assert sat
-
-
-@pytest.fixture(scope="module")
-def level5_root(tmp_path_factory):
-    try:
-        import make_synth_root as msr
-    except Exception as exc:  # pragma: no cover
-        pytest.skip(f"cannot import fixture builder: {exc}")
-    base = tmp_path_factory.mktemp("s0_sat")
-    orig = msr.__file__
-    msr.__file__ = str(base / "make_synth_root.py")
-    try:
-        msr.main(regime="level5", n_events=80, write_truth=True, dt_ns=DT_NS)
-    finally:
-        msr.__file__ = orig
-    return base / "regime" / "level5"
-
-
-def _run(out_dir: Path, *args: str) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [PYBIN, "-m", "pmtdeconv", *args,
-           "--out-dir", str(out_dir), "--log-level", "quiet"]
-    res = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
-    if res.returncode != 0:
-        raise AssertionError(
-            f"pmtdeconv {' '.join(args)} failed ({res.returncode}):\n"
-            f"{res.stdout}\n{res.stderr}")
-
-
-def test_saturation_kept_and_flagged(level5_root, tmp_path):
-    """S5 contract: clipped events are KEPT and FLAGGED, detected by the plateau
-    at DEFAULT (no --sat-thresh, no rail knowledge), with timing recovered —
-    never dropped."""
-    _run(tmp_path / "h", "hits", "--dataset", "na22",
-         "--data-root", str(level5_root), "--runs", "0", "--no-vetoes")
-    df = pd.read_csv(tmp_path / "h" / "all_results.csv")
-    assert "saturated" in df.columns
-    sat = df[df["saturated"] == True]  # noqa: E712
-    # plateau flags level5's clipped events with no threshold supplied
-    assert len(sat) > 0, "plateau should flag level5's clipped events at default"
-    # saturation is no longer a DROP reason
-    assert "saturated" not in set(df["reason"].dropna().astype(str))
-    # kept (success) with recovered timing — saturation is a charge defect only
-    sat_ok = sat[sat["success"] == True]  # noqa: E712
-    assert len(sat_ok) > 0
-    assert sat_ok["t_peak"].notna().any()
 
 
 if __name__ == "__main__":

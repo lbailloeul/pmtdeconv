@@ -134,9 +134,16 @@ def test_tune_dry_run(tmp_path):
         assert not (out_dir / "sweep_summary.csv").exists()
 
 
-def test_write_presets_idempotent(tmp_path):
+def test_write_presets_idempotent(tmp_path, monkeypatch):
     """Running tune --write-presets twice on the same date produces a
-    file with exactly one entry per (regime, date) — no duplicates."""
+    file with exactly one entry per (regime, date) — no duplicates.
+
+    Writes to a redirected path: the default target is the TRACKED
+    ``pmtdeconv/presets/tuned_configs.py``, so this test used to leave a
+    spurious diff in the working tree of anyone who ran pytest.
+    """
+    tuned_path = tmp_path / "tuned_configs.py"
+    monkeypatch.setenv("PMTDECONV_TUNED_CONFIGS", str(tuned_path))
     out_dir = tmp_path / "writepre"
     # First run
     _run_pmtdeconv(
@@ -149,7 +156,6 @@ def test_write_presets_idempotent(tmp_path):
         "--out-dir", str(out_dir),
         "--write-presets",
     )
-    tuned_path = REPO_ROOT / "pmtdeconv" / "presets" / "tuned_configs.py"
     src_after_1 = tuned_path.read_text()
     # Count occurrences of the would-be preset name
     import re
@@ -237,3 +243,22 @@ def test_collapse_alias_never_references_collapsed_name():
     alias = out["na22-cosine-tuned-latest-level3"]
     referenced = [n for n in dated_kept if n in alias["description"]]
     assert referenced, "alias must reference a retained dated preset"
+
+
+def test_tuned_configs_path_is_redirectable(tmp_path, monkeypatch):
+    """`tune --write-presets` must be able to write somewhere other than the
+    package.
+
+    The default target lives INSIDE pmtdeconv: in a source checkout that is a
+    tracked file (pytest used to leave a spurious diff), and for a
+    pip-installed collaborator it resolves into site-packages — read-only on
+    some installs, discarded on upgrade on the rest.
+    """
+    from pmtdeconv.commands._tune_shared import tuned_configs_path
+    monkeypatch.delenv("PMTDECONV_TUNED_CONFIGS", raising=False)
+    assert tuned_configs_path().name == "tuned_configs.py"
+    assert tuned_configs_path().parent.name == "presets"
+
+    target = tmp_path / "elsewhere" / "tuned.py"
+    monkeypatch.setenv("PMTDECONV_TUNED_CONFIGS", str(target))
+    assert tuned_configs_path() == target

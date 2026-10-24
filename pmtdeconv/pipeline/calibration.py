@@ -1,17 +1,16 @@
-"""Shared calibration interface — Calibration protocol + Catalog abstraction.
+"""Shared calibration interface — ``ProvenanceRecord`` + ``Catalog``.
 
 The three calibration features in pmtdeconv — **template** (``template build`` +
-the catalog resolver), **cutoff/denoiser** (``tune cosine|wavelet|stft|denoiser``),
+the catalog resolver), **cutoff/denoiser** (``tune cosine|wavelet|stft``),
 and **vetoes** (``vetoes calibrate``) — are the same SHAPE: scan a data sample,
 derive candidate parameters, describe them for human review, and save the winner
 to a per-family catalog with a uniform provenance record. They keep their
 distinct command names and objectives (documented per-family below), but share
 this internal interface so the workflow and provenance are consistent.
 
-This module lands in step 3 of the architecture restructure; its first consumer
-is the template catalog/resolver (:mod:`pmtdeconv.pipeline.template`). Steps 5
-(``vetoes calibrate`` / ``VetoProfile``) and 7 (``tune denoiser``) adopt the
-same :class:`Calibration` / :class:`Catalog` shapes.
+Consumers: the template resolver (:mod:`pmtdeconv.pipeline.template`), the
+veto-profile and gain catalogs, and every ``*calibrate`` command, which record
+a :class:`ProvenanceRecord` in the manifest.
 
 **The interface unifies the WORKFLOW, not the OBJECTIVE.** Each calibration
 keeps its own criterion + data source:
@@ -32,10 +31,9 @@ keeps its own criterion + data source:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import date as _date
-from typing import (Any, Dict, Generic, List, Optional, Protocol, TypeVar,
-                    runtime_checkable)
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 
 @dataclass
@@ -66,35 +64,6 @@ class ProvenanceRecord:
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
-
-
-C = TypeVar("C")
-
-
-@dataclass
-class Candidate(Generic[C]):
-    """A derived parameter set awaiting review/save. ``params`` is the family's
-    artifact (a template dict, a ``VetoProfile``, a denoiser config)."""
-    params: C
-    score: Optional[float] = None
-    metrics: Dict[str, Any] = field(default_factory=dict)
-    provenance: Optional[ProvenanceRecord] = None
-
-
-@runtime_checkable
-class Calibration(Protocol):
-    """The shared shape of template / cutoff-denoiser / veto calibration.
-
-    Implementations keep their own objective + data source; only the workflow
-    verbs are common. (Not every consumer implements every verb — the template
-    *resolver* only does catalog lookup; ``template build`` is the deriving
-    :class:`Calibration`.)
-    """
-    family: str
-
-    def derive(self, sample: Any) -> "Candidate": ...
-    def describe(self, candidate: "Candidate") -> str: ...
-    def save(self, name: str, candidate: "Candidate") -> None: ...
 
 
 V = TypeVar("V")

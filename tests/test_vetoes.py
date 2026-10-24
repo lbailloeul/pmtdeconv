@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit tests for the acceptance and veto logic in utils.py.
+Unit tests for the acceptance and veto logic in pmtdeconv.core.
 
 Run:  python -m pytest tests/test_vetoes.py -v
   or: python tests/test_vetoes.py
@@ -10,14 +10,18 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pmtdeconv.utils import (
+from pmtdeconv.core.kernels import (
     DTYPE, LANL_TEMPLATE, MILLIQAN_TEMPLATE,
     gaussian_smeared_biexponential, build_spe_template,
-    gaussian_lowpass_filter, cosine_lowpass_filter,
+)
+from pmtdeconv.core.filters import gaussian_lowpass_filter, cosine_lowpass_filter
+from pmtdeconv.core.dsp import (
     deconvolve_hits, stft_denoise,
-    baseline_noise_bestwindow, sliding_local_mean,
+    baseline_noise_bestwindow,
+)
+from pmtdeconv.core.peaks import (
     find_integration_windows, _walk_to_trough_left, _walk_to_trough_right,
-    cfd50_time, apply_peak_vetoes,
+    cfd_time, apply_peak_vetoes,
 )
 
 # ═══════════════════════════════════════════════════════════════════
@@ -164,27 +168,6 @@ class TestPeakVetoes:
         assert not success
         assert reason == "out_of_time"
 
-    def test_post_sat_shift_veto(self):
-        """Peak after post_sat_cutoff_bin should be vetoed."""
-        u_rec, t, peaks, windows, pw = self._make_simple_urec(peak_bins=[400])
-        success, reason, _ = apply_peak_vetoes(
-            400, 0, peaks, u_rec, t, windows, pw, len(u_rec),
-            post_sat_cutoff_bin=300,  # cutoff before the peak
-            dt_ns=1.25,
-        )
-        assert not success
-        assert reason == "post_sat_shift"
-
-    def test_post_sat_shift_before_cutoff_passes(self):
-        """Peak before post_sat_cutoff_bin should pass."""
-        u_rec, t, peaks, windows, pw = self._make_simple_urec(peak_bins=[200])
-        success, reason, _ = apply_peak_vetoes(
-            200, 0, peaks, u_rec, t, windows, pw, len(u_rec),
-            post_sat_cutoff_bin=500,
-            dt_ns=1.25,
-        )
-        assert success, f"Peak before cutoff should pass, got reason={reason}"
-
     def test_afterpulse_veto(self):
         """Small peak near a much larger peak should be vetoed as afterpulse."""
         u_rec, t, peaks, windows, pw = self._make_simple_urec(
@@ -257,28 +240,6 @@ class TestPeakVetoes:
         assert not success
         # Should be caught by afterpulse or negative_charge veto
         assert reason in ("negative_charge", "afterpulse_veto"), f"Expected negative_charge or afterpulse, got {reason}"
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Tests: sliding_local_mean
-# ═══════════════════════════════════════════════════════════════════
-
-class TestSlidingLocalMean:
-    def test_flat_signal(self):
-        """Sliding mean of a flat signal should be approximately the same value."""
-        wave = np.full(200, 100.0)
-        lm = sliding_local_mean(wave, 40)
-        # Interior should be exactly 100
-        assert np.allclose(lm[20:-20], 100.0, atol=1e-10)
-
-    def test_detects_shift(self):
-        """Sliding mean should detect a baseline shift after a big pulse."""
-        wave = np.full(1000, 100.0)
-        # Drop baseline to 50 after bin 500
-        wave[500:] = 50.0
-        lm = sliding_local_mean(wave, 40)
-        # Well into the shifted region, local mean should be ~50
-        assert lm[600] < 70.0, f"Local mean at shifted region = {lm[600]}"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -360,7 +321,7 @@ class TestCfd50Time:
         u[90:101] = np.linspace(0.0, 100.0, 11)   # apex at sample 100
         u[101:111] = np.linspace(90.0, 0.0, 10)
         t = np.arange(300, dtype=DTYPE) * 2.0     # dt = 2 ns
-        assert abs(cfd50_time(u, 100, t) - 190.0) < 1e-9  # sample 95 → 190 ns
+        assert abs(cfd_time(u, 100, t) - 190.0) < 1e-9  # sample 95 → 190 ns
 
     def test_between_samples_interpolation(self):
         """Crossing between grid points is linearly interpolated."""
@@ -369,7 +330,7 @@ class TestCfd50Time:
         u[11] = 40.0
         u[12] = 60.0   # apex
         t = np.arange(50, dtype=DTYPE) * 1.0
-        assert abs(cfd50_time(u, 12, t) - 10.5) < 1e-9
+        assert abs(cfd_time(u, 12, t) - 10.5) < 1e-9
 
     def test_half_time_precedes_apex(self):
         """t_half sits on the rising edge, strictly before the apex time."""
@@ -377,20 +338,20 @@ class TestCfd50Time:
         u[80:101] = np.linspace(0.0, 10.0, 21)
         u[101:121] = np.linspace(9.5, 0.0, 20)
         t = np.arange(200, dtype=DTYPE) * 0.5
-        assert cfd50_time(u, 100, t) < t[100]
+        assert cfd_time(u, 100, t) < t[100]
 
     def test_nonpositive_peak_falls_back_to_apex(self):
         """A non-positive 'peak' has no half level; falls back to t[pk]."""
         u = np.zeros(50, dtype=DTYPE) - 1.0
         t = np.arange(50, dtype=DTYPE) * 1.25
-        assert cfd50_time(u, 25, t) == t[25]
+        assert cfd_time(u, 25, t) == t[25]
 
     def test_peak_at_start_of_trace(self):
         """Apex at sample 0 must not walk out of bounds."""
         u = np.zeros(50, dtype=DTYPE)
         u[0] = 5.0
         t = np.arange(50, dtype=DTYPE) * 1.0
-        out = cfd50_time(u, 0, t)
+        out = cfd_time(u, 0, t)
         assert np.isfinite(out) and out == t[0]
 
 
@@ -437,68 +398,14 @@ class TestTemplateAndFilters:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Tests: veto priority order
-# ═══════════════════════════════════════════════════════════════════
-
-class TestVetoPriority:
-    """Verify that vetoes are applied in the correct priority order."""
-
-    def test_out_of_time_beats_post_sat(self):
-        """The out_of_time (time-window) veto takes priority over post_sat_shift."""
-        N = 1024
-        u_rec = np.zeros(N, dtype=DTYPE)
-        u_rec[4] = 1.0
-        t = np.arange(N, dtype=DTYPE) * 1.25
-        peaks = np.array([4])
-        pad_bins = 15
-        windows = find_integration_windows(u_rec, peaks, pad_bins)
-        pw = [_walk_to_trough_right(u_rec, 4, pad_bins) - _walk_to_trough_left(u_rec, 4, pad_bins)]
-
-        _, reason, _ = apply_peak_vetoes(
-            4, 0, peaks, u_rec, t, windows, pw, N,
-            t_peak_min_ns=20.0,
-            post_sat_cutoff_bin=2,  # also in post-sat zone
-            dt_ns=1.25,
-        )
-        assert reason == "out_of_time", f"Expected out_of_time, got {reason}"
-
-    def test_afterpulse_beats_post_sat(self):
-        """Afterpulse veto should take priority over post_sat_shift."""
-        N = 1024
-        u_rec = np.zeros(N, dtype=DTYPE)
-        # Big peak at 400
-        for i in range(-3, 4):
-            u_rec[400 + i] = max(0, 5.0 - abs(i))
-        # Small peak at 410
-        u_rec[410] = 0.5
-
-        t = np.arange(N, dtype=DTYPE) * 1.25
-        peaks = np.array([400, 410])
-        pad_bins = 15
-        windows = find_integration_windows(u_rec, peaks, pad_bins)
-        pw = []
-        for pk in peaks:
-            pw.append(_walk_to_trough_right(u_rec, pk, pad_bins) -
-                      _walk_to_trough_left(u_rec, pk, pad_bins))
-
-        _, reason, _ = apply_peak_vetoes(
-            410, 1, peaks, u_rec, t, windows, pw, N,
-            afterpulse_window_ns=40.0, afterpulse_height_ratio=5.0,
-            post_sat_cutoff_bin=405,  # also in post-sat zone
-            dt_ns=1.25,
-        )
-        assert reason == "afterpulse_veto", f"Expected afterpulse_veto, got {reason}"
-
-
-# ═══════════════════════════════════════════════════════════════════
 # Run with plain python (no pytest needed)
 # ═══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import traceback
     test_classes = [
-        TestBaseline, TestPeakVetoes, TestSlidingLocalMean,
-        TestIntegrationWindows, TestTemplateAndFilters, TestVetoPriority,
+        TestBaseline, TestPeakVetoes,
+        TestIntegrationWindows, TestTemplateAndFilters,
     ]
     n_pass = 0
     n_fail = 0

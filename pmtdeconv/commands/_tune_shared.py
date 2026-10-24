@@ -17,6 +17,7 @@ Three pieces of common logic:
 from __future__ import annotations
 
 import importlib
+import os
 import re
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, Optional
@@ -32,6 +33,16 @@ from pmtdeconv.pipeline.scoring import ScoringWeights
 
 
 # ─── regime fixture management ─────────────────────────────────────
+
+
+def area_denoiser(settings, provenance) -> str:
+    """The denoiser ``tune cosine`` / ``tune fom`` actually run: the area path
+    has only the wavelet, so a preset's STFT tunes with the wavelet and the
+    manifest records that, not a CLI choice nobody made."""
+    if settings.denoiser not in ("none", "wavelet"):
+        settings.denoiser = "wavelet"
+        provenance["denoiser"] = "default (area path has no STFT)"
+    return settings.denoiser
 
 def regime_fixture(regime: str) -> Path:
     """tests/fixtures/regime/<regime>/flattened_Run0.root"""
@@ -312,6 +323,25 @@ def _collapse_tuned(merged: Dict[str, dict]) -> Dict[str, dict]:
     return {**passthrough, **kept, **aliases}
 
 
+def tuned_configs_path() -> Path:
+    """Where ``tune --write-presets`` writes the generated presets.
+
+    ``PMTDECONV_TUNED_CONFIGS`` overrides it; otherwise the module inside the
+    package, which is where ``presets/__init__`` imports it from.
+
+    The override exists because the default writes INTO the package: in a
+    source checkout that dirties a tracked file (the test suite used to leave
+    a spurious diff for every collaborator who ran pytest), and in a
+    pip-installed environment it targets site-packages — read-only for some
+    installs, and discarded on the next upgrade for the rest. Redirecting the
+    path keeps the generated presets out of both.
+    """
+    override = os.environ.get("PMTDECONV_TUNED_CONFIGS")
+    if override:
+        return Path(override).expanduser()
+    return PROJECT_ROOT / "pmtdeconv" / "presets" / "tuned_configs.py"
+
+
 def write_tuned_presets(new_entries: Dict[str, dict]) -> int:
     """Read tuned_configs.py, merge ``new_entries`` (overwriting same
     names), re-emit the whole file from scratch with deterministic
@@ -347,7 +377,7 @@ def write_tuned_presets(new_entries: Dict[str, dict]) -> int:
         'DO NOT EDIT BY HAND. Regenerated idempotently each time '
         '``--write-presets``\n'
         'runs: read existing entries, merge new ones, collapse identical-config\n'
-        'dated snapshots (keep the newest per config) and emit a stable\n'
+        'dated snapshots (keep the oldest per config) and emit a stable\n'
         '``<prefix>-tuned-latest-<suffix>`` alias tracking the most recent\n'
         'winner, then rewrite the whole file.\n"""\n',
         "from __future__ import annotations\n",
@@ -356,8 +386,6 @@ def write_tuned_presets(new_entries: Dict[str, dict]) -> int:
         "\n",
         "TUNED_CONFIGS: Dict[str, ConfigPreset] = {}\n",
         "\n",
-        "def is_tuned(name: str) -> bool:\n",
-        "    return name in TUNED_CONFIGS\n",
     ]
     for name in sorted(final):
         p = final[name]
@@ -369,6 +397,7 @@ def write_tuned_presets(new_entries: Dict[str, dict]) -> int:
             f"    description={p['description']!r},\n"
             f")\n"
         )
-    tuned_path = PROJECT_ROOT / "pmtdeconv" / "presets" / "tuned_configs.py"
+    tuned_path = tuned_configs_path()
+    tuned_path.parent.mkdir(parents=True, exist_ok=True)
     tuned_path.write_text("".join(lines))
     return len(final)

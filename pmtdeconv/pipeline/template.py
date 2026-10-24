@@ -124,24 +124,7 @@ class Template:
                                    "generic",
                                    detail=f"allow_generic_fallback; "
                                           f"missing {resolved}"))
-                origin = ("--template" if source == "explicit"
-                          else f"the {dataset!r} dataset default")
-                raise TemplateResolutionError(
-                    f"\nSPE template not found: {resolved}\n"
-                    f"  (resolved from {origin})\n\n"
-                    f"Deconvolution divides by the measured single-photoelectron "
-                    f"response. pmtdeconv will not silently substitute a generic "
-                    f"kernel: the charges would look plausible and be wrong.\n"
-                    f"  Fix one of:\n"
-                    f"    build one for your detector:\n"
-                    f"        pmtdeconv template build --dataset "
-                    f"{dataset or '<dataset>'}\n"
-                    f"        pmtdeconv template aggregate\n"
-                    f"    point at an existing CSV:\n"
-                    f"        --template /path/to/spe_template.csv\n"
-                    f"    accept the generic kernel (timing only; charges NOT "
-                    f"calibrated):\n"
-                    f"        --allow-generic-fallback\n")
+                raise _missing_template_error(resolved, source, dataset)
 
             return cls(csv_path=resolved, pmt_type=pmt_type,
                        provenance=_rec(source, detail=f"csv={resolved}"))
@@ -213,6 +196,67 @@ class Template:
                        detail=f"interactive pmt_type={choice} -> {entry.csv_path}"))
 
 
+def add_generic_fallback_flag(group) -> None:
+    """Add ``--allow-generic-fallback`` — one definition for every command
+    that deconvolves (``hits``, ``area``, ``tune *``)."""
+    group.add_argument(
+        "--allow-generic-fallback", dest="allow_generic_fallback",
+        action="store_true", default=None,
+        help="If the SPE template cannot be found (the configured CSV is "
+             "missing, or none is configured and the PMT type is "
+             "uncatalogued), use the generic MilliQan kernel instead of "
+             "erroring. Timing only: charges are NOT calibrated.")
+
+
+def configured_template_csv(settings,
+                            provenance: Optional[Dict[str, str]] = None
+                            ) -> Optional[Path]:
+    """The configured template CSV for commands that load it themselves
+    (``area``, ``tune *``), under the same missing-file rule ``hits`` applies.
+
+    Returns ``None`` when no template is configured (the caller keeps its
+    generic kernel) or when ``--allow-generic-fallback`` accepted a missing
+    file. A configured path that does not exist raises
+    :class:`TemplateResolutionError` — before 2026-09-23 these commands
+    warned once and silently deconvolved with the generic kernel while the
+    manifest named the missing file. ``--dry-run`` never fails here.
+    """
+    csv = getattr(settings, "template_csv", None)
+    if csv is None:
+        return None
+    path = Path(csv)
+    if path.exists() or getattr(settings, "dry_run", False):
+        return path
+    if getattr(settings, "allow_generic_fallback", False):
+        print(f"[template] configured CSV not found ({path}); "
+              f"--allow-generic-fallback given -> generic kernel "
+              f"(charges NOT calibrated).")
+        return None
+    source = "explicit" if (provenance or {}).get("template_csv") == "cli" else "dataset"
+    raise _missing_template_error(path, source, getattr(settings, "dataset", None))
+
+
+def _missing_template_error(resolved: Path, source: str,
+                            dataset: Optional[str]) -> TemplateResolutionError:
+    origin = ("--template" if source == "explicit"
+              else f"the {dataset!r} dataset default")
+    return TemplateResolutionError(
+        f"\nSPE template not found: {resolved}\n"
+        f"  (resolved from {origin})\n\n"
+        f"Deconvolution divides by the measured single-photoelectron "
+        f"response. pmtdeconv will not silently substitute a generic "
+        f"kernel: the charges would look plausible and be wrong.\n"
+        f"  Fix one of:\n"
+        f"    build one for your detector:\n"
+        f"        pmtdeconv template build --dataset "
+        f"{dataset or '<dataset>'}\n"
+        f"    point at an existing CSV:\n"
+        f"        --template /path/to/spe_template.csv\n"
+        f"    accept the generic kernel (timing only; charges NOT "
+        f"calibrated):\n"
+        f"        --allow-generic-fallback\n")
+
+
 def _guidance(dataset: Optional[str], pmt_type: Optional[str]) -> str:
     return (
         f"No SPE template could be resolved for dataset={dataset!r} "
@@ -221,8 +265,7 @@ def _guidance(dataset: Optional[str], pmt_type: Optional[str]) -> str:
         "PMT-type catalog.\n"
         "  Fixes:\n"
         "    - pass --template <csv> with a per-channel SPE fit, or\n"
-        "    - build one:  pmtdeconv template build --dataset <name> && "
-        "pmtdeconv template aggregate, or\n"
+        "    - build one:  pmtdeconv template build --dataset <name>, or\n"
         "    - set the dataset's pmt_type to a catalogued type "
         f"({', '.join(TEMPLATE_CATALOG.pmt_types())}), or\n"
         "    - pass --allow-generic-fallback to use the generic MilliQan "

@@ -36,13 +36,14 @@ from pmtdeconv.core.filters import cosine_lowpass_filter
 from pmtdeconv.core.dsp import (
     deconvolve_hits,
     baseline_noise_bestwindow,
-    detect_saturation_plateau,
+    is_saturated,
     wavelet_denoise,
-    sliding_local_mean,
+    sample_noise_sigma,
 )
 from pmtdeconv.core.peaks import (
-    cfd50_time,
+    cfd_time,
     fwhm_ns,
+    RAW_LOCAL_BASELINE_NS,
     apply_peak_vetoes,
     find_integration_windows,
     _walk_to_trough_left,
@@ -51,6 +52,20 @@ from pmtdeconv.core.peaks import (
 from pmtdeconv.pipeline.gain import estimate_npe_raw, raw_window_fraction
 from pmtdeconv.pipeline.template import FALLBACK_TEMPLATE
 from pmtdeconv.presets.veto_profiles import VETO_PROFILES
+
+
+def _template_for(templates, branch):
+    """Branch's SPE template; warns when a loaded template set lacks it.
+
+    An empty ``templates`` is the deliberate generic-kernel mode (already
+    announced by the caller), so only a partial set warns.
+    """
+    if branch in templates or not templates:
+        return templates.get(branch, FALLBACK_TEMPLATE)
+    print(f"  [warn] no SPE template for branch {branch!r} (template has "
+          f"{sorted(templates)}); using the generic fallback kernel.")
+    return FALLBACK_TEMPLATE
+
 
 # One event yielded by an area reader: (run, cycle, entry, branch, wave, N).
 # ``wave`` is float64 with polarity already applied by the reader (the flat
@@ -176,6 +191,30 @@ class AreaMode:
         return rows
 
 
+
+def _kernel_for(cache, N, branch, dt_ns, templates, cutoff_mhz, fft_pad):
+    """``(kernel, filter, n_fft, raw_window_fraction, peak_delay_bins)`` for
+    record length, branch and sample interval, built once and shared by hits
+    and area."""
+    key = (N, branch, dt_ns)
+    if key not in cache:
+        n_fft = _next_pow2(2 * N) if fft_pad else N
+        r = build_spe_template(n_fft, dt_ns, _template_for(templates, branch))
+        cache[key] = (r, cosine_lowpass_filter(n_fft, dt_ns, cutoff_mhz), n_fft,
+                      raw_window_fraction(r, dt_ns), int(np.argmax(r)))
+    return cache[key]
+
+
+def _deconvolve(y, r, filt, n_fft):
+    """FFT deconvolution of ``y``, zero-padded to ``n_fft`` (linear) when it
+    exceeds ``len(y)``, cropped back to ``len(y)``."""
+    N = len(y)
+    if n_fft == N:
+        return deconvolve_hits(y, r, filt)
+    y_pad = np.zeros(n_fft, dtype=np.float64)
+    y_pad[:N] = y
+    return deconvolve_hits(y_pad, r, filt)[:N]
+
 def run_area(events: Iterable[AreaEvent], *, dt_ns: float,
              templates: Dict[str, dict], cosine_cutoff_mhz: float,
              wavelet, wlevel, denoise_mode, thresh_k,
@@ -190,26 +229,29 @@ def run_area(events: Iterable[AreaEvent], *, dt_ns: float,
     only the I/O reader differs between the flat and object callers.
     """
     rows: List[dict] = []
-    g_cache: Dict[Tuple[int, str], tuple] = {}   # (N, branch) -> (r_cal, filt, n_fft)
+    g_cache: Dict[tuple, tuple] = {}   # see _kernel_for
     t_cache: Dict[int, np.ndarray] = {}          # N -> t_full
 
     do_denoise = bool(wavelet) and str(wavelet).lower() not in {"none", "off", "no"}
 
     for run, cycle, entry_i, branch, wave, N in events:
-        # Saturation is a data-quality FLAG (plateau-detected; no rail
-        # threshold), carried on every row. Saturated events are KEPT and
-        # integrated normally — charge is flagged, not discarded (cut
-        # downstream via the flag).
-        # noise0 window is 100 SAMPLES (not ns): ~50 ns @ na22 dt, ~143 ns @ cd109.
-        noise0 = float(np.nanstd(wave[:100])) or 1.0
-        is_sat, _run = detect_saturation_plateau(wave, noise0)
+        # Clipped waveforms are dropped before deconvolution (see the hits
+        # path, _process_event): their deconvolved area is not physical.
+        is_sat = is_saturated(wave)
         row_base = {"run": run, "cycle": cycle, "entry": entry_i,
                     "branch": branch, "saturated": bool(is_sat)}
+        if is_sat:
+            rows.append({**row_base, "interval": -1, "area": np.nan,
+                         "peak_height": np.nan, "reason": "saturated"})
+            continue
+
+        r_cal, filt, n_fft, raw_frac, _delay = _kernel_for(
+            g_cache, N, branch, dt_ns, templates, cosine_cutoff_mhz, area.fft_pad)
 
         # 0–20 PE regime flag (mirrors the hits path; blank when uncalibrated).
         spe_q = gain.spe_charge(branch) if gain is not None else None
         if spe_q:
-            npe_raw = estimate_npe_raw(wave, dt_ns, spe_q)
+            npe_raw = estimate_npe_raw(wave, dt_ns, spe_q * raw_frac)
             row_base["npe_raw"] = npe_raw
             row_base["in_regime"] = bool(pe_band[0] <= npe_raw <= pe_band[1])
             if in_regime_only and not row_base["in_regime"]:
@@ -245,25 +287,15 @@ def run_area(events: Iterable[AreaEvent], *, dt_ns: float,
 
         y_sub = wave - ped
 
-        key = (N, branch)
-        if key not in g_cache:
-            tmpl = templates.get(branch, FALLBACK_TEMPLATE)
-            n_fft = _next_pow2(2 * N) if area.fft_pad else N
-            r_cal = build_spe_template(n_fft, dt_ns, tmpl)
-            filt = cosine_lowpass_filter(n_fft, dt_ns, cosine_cutoff_mhz)
-            g_cache[key] = (r_cal, filt, n_fft)
-        r_cal, filt, n_fft = g_cache[key]
-
-        if n_fft != N:
-            y_pad = np.zeros(n_fft, dtype=np.float64)
-            y_pad[:N] = y_sub
-            u_rec = deconvolve_hits(y_pad, r_cal, filt)[:N]
-        else:
-            u_rec = deconvolve_hits(y_sub, r_cal, filt)
+        u_rec = _deconvolve(y_sub, r_cal, filt, n_fft)
 
         if do_denoise:
-            u_rec = wavelet_denoise(u_rec, wavelet=wavelet, level=wlevel,
-                                    mode=denoise_mode, thresh_k=thresh_k)
+            # The SWT is periodic. A cropped padded window does not wrap, so
+            # its N-1 -> 0 jump becomes a spike at t=0; mirroring removes the
+            # jump and keeps the window's own noise level.
+            ext = np.concatenate([u_rec, u_rec[::-1]]) if n_fft != N else u_rec
+            u_rec = wavelet_denoise(ext, wavelet=wavelet, level=wlevel,
+                                    mode=denoise_mode, thresh_k=thresh_k)[:N]
 
         rows.extend(area.finalize(u_rec, N, dt_ns, row_base))
 
@@ -290,10 +322,15 @@ class HitsProfile:
     """Per-denoiser parameter set for the unified hit-finding body.
 
     The wavelet/none path and the (formerly separate) STFT path differ only in
-    these constants + a few behavior flags; everything else in
-    :func:`_process_event` is shared. ``WAVELET_PROFILE`` reproduces the strict
-    Na22 wavelet-hits constants; ``STFT_PROFILE`` the relaxed STFT ones. Both are
-    built from the :data:`~pmtdeconv.presets.veto_profiles.VETO_PROFILES` catalog.
+    these constants; everything else in :func:`_process_event` is shared.
+    ``WAVELET_PROFILE`` reproduces the strict Na22 wavelet-hits constants;
+    ``STFT_PROFILE`` the relaxed STFT ones. Both are built from the
+    :data:`~pmtdeconv.presets.veto_profiles.VETO_PROFILES` catalog.
+
+    Every CLI flag behaves the same under every denoiser. Until 2026-10 the
+    STFT profile silently ignored ``--no-vetoes``, ``--peak-order`` and
+    ``--denoise-raw``; it honors them now (its default output is unchanged,
+    since with vetoes on ``--peak-order auto`` is chronological anyway).
     """
     denoiser_kind: str            # "wavelet" (honors no_denoise) | "stft"
     # baseline quality gate
@@ -309,14 +346,7 @@ class HitsProfile:
     t_peak_max_ns: float
     afterpulse_window_ns: float
     afterpulse_height_ratio: float
-    post_sat_window_ns: float
-    post_sat_sigma_mult: float
-    post_sat_offset_ns: float
     min_charge_purity: float
-    # behavior switches
-    allow_no_vetoes: bool         # if False, --no-vetoes is ignored (STFT always vetoes)
-    allow_peak_order: bool        # if False, peak_id is always chronological
-    allow_denoise_raw: bool       # if False, --denoise-raw is ignored (STFT never)
     baseline_search_end_ns: float = 600.0
     pad_ns: float = 18.0
     # 0–20 PE re-scope knobs (defaults = historical hardcoded behavior;
@@ -326,41 +356,26 @@ class HitsProfile:
     baseline_sigma_scale: float = 1.0
 
     @classmethod
-    def from_veto_profile(cls, vp, *, denoiser_kind: str,
-                          allow_all: bool = False) -> "HitsProfile":
+    def from_veto_profile(cls, vp, *, denoiser_kind: str) -> "HitsProfile":
         """Build a :class:`HitsProfile` from a catalogued
-        :class:`~pmtdeconv.presets.veto_profiles.VetoProfile`.
-
-        ``allow_all=True`` (used when a profile is EXPLICITLY selected via
-        ``--veto-profile``) turns every ``allow_*`` behavior switch on — a
-        silently-ignored CLI flag violates the flag-not-veto philosophy, and
-        an explicit profile means the expert took control. Default paths keep
-        the legacy per-denoiser switch sets (byte-identical).
-        """
-        if allow_all:
-            switches = dict(allow_no_vetoes=True, allow_peak_order=True,
-                            allow_denoise_raw=True)
-        elif denoiser_kind == "stft":
-            switches = dict(allow_no_vetoes=False, allow_peak_order=False,
-                            allow_denoise_raw=False)
-        else:
-            switches = dict(allow_no_vetoes=True, allow_peak_order=True,
-                            allow_denoise_raw=True)
-        return cls(denoiser_kind=denoiser_kind, **switches,
-                   **vp.hits_fields())
+        :class:`~pmtdeconv.presets.veto_profiles.VetoProfile`."""
+        return cls(denoiser_kind=denoiser_kind, **vp.hits_fields())
 
 
 WAVELET_PROFILE = HitsProfile(
     denoiser_kind="wavelet",
-    allow_no_vetoes=True, allow_peak_order=True, allow_denoise_raw=True,
     **VETO_PROFILES.lookup(name="wavelet_hits").hits_fields(),
 )
 
 STFT_PROFILE = HitsProfile(
     denoiser_kind="stft",
-    allow_no_vetoes=False, allow_peak_order=False, allow_denoise_raw=False,
     **VETO_PROFILES.lookup(name="stft_hits").hits_fields(),
 )
+
+
+def _mad_sigma(x) -> float:
+    """Robust (MAD) noise sigma, floored so a threshold is never zero."""
+    return max(1.4826 * float(np.median(np.abs(x - np.median(x)))), 1e-12)
 
 
 def _denoise_u(u, args):
@@ -392,7 +407,7 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
     entry_i = rec.entry
     branch = rec.branch
 
-    no_vetoes = bool(args.no_vetoes) if profile.allow_no_vetoes else False
+    no_vetoes = bool(args.no_vetoes)
     snr_peak_min = args.snr_peak_min
     peak_distance_ns = args.peak_distance_ns
     pad_ns = profile.pad_ns
@@ -401,18 +416,15 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
     row_id = {"run": rec.run, "cycle": rec.cycle, "det": rec.det,
               "chan": rec.chan, "branch": branch, "entry": entry_i}
 
-    # Saturation is a DATA-QUALITY FLAG, not a veto. Detect the clipped-top
-    # plateau (universal — no per-detector rail threshold) and carry
-    # ``saturated`` on every row. Saturated events are KEPT and fully processed:
-    # their edge timing is recovered (validated robust to clipping); only their
-    # charge is unreliable, and is cut downstream via the flag (e.g.
-    # ``plot energy --exclude-saturated``). This replaces the old
-    # ``wave.max() >= sat_threshold`` drop, which both needed each detector's
-    # rail AND silently discarded usable timing.
-    # noise0 window is 100 SAMPLES (not ns): ~50 ns @ na22 dt, ~143 ns @ cd109.
-    noise0 = float(np.nanstd(wave[:100])) or 1.0
-    is_sat, _run = detect_saturation_plateau(wave, noise0)
+    # A clipped waveform breaks the SPE-sum model: its deconvolved charge runs
+    # BACKWARDS with energy (Run 65212, Spearman −0.86 vs raw area). It is
+    # dropped before deconvolution, even under --no-vetoes; saturated-era
+    # timing comes from raw CFD (`raw-area mqana` raw_timing CSV) instead.
+    is_sat = is_saturated(wave)
     row_id["saturated"] = bool(is_sat)
+    if is_sat:
+        rows.append({**row_id, "success": False, "reason": "saturated"})
+        return rows
 
     # 0–20 PE regime flag (2026-07-28): deconv-independent raw nPE estimate +
     # `in_regime`, carried on EVERY row (include-by-default, mirroring the
@@ -425,16 +437,9 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
     # Kernel/filter cache — hoisted above the regime gate (pure reordering;
     # nothing here depends on the baseline) so the RAW nPE estimator can use
     # the resolved kernel's raw-window fraction as its anchor conversion.
-    fft_pad = bool(getattr(args, "fft_pad", True))
-    cache_key = (N, branch)
-    if cache_key not in g_cache:
-        tmpl = ch_templates.get(branch, FALLBACK_TEMPLATE)
-        n_fft = _next_pow2(2 * N) if fft_pad else N
-        r_calib = build_spe_template(n_fft, dt_ns, tmpl)
-        filt = cosine_lowpass_filter(n_fft, dt_ns, cosine_cutoff_mhz)
-        g_cache[cache_key] = (r_calib, filt, n_fft,
-                             raw_window_fraction(r_calib, dt_ns))
-    r_calib, filt, n_fft, raw_frac = g_cache[cache_key]
+    r_calib, filt, n_fft, raw_frac, raw_delay = _kernel_for(
+        g_cache, N, branch, dt_ns, ch_templates, cosine_cutoff_mhz,
+        bool(getattr(args, "fft_pad", True)))
 
     if spe_q:
         pe_lo, pe_hi = getattr(args, "pe_band", None) or (0.0, 20.0)
@@ -483,19 +488,12 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
         return rows
 
     raw_peak = float(np.max(wave) - ped_i)
-    if noise_i > 0 and raw_peak < profile.raw_snr_mult * noise_i and not no_vetoes:
+    # Sample-to-sample noise, not the window σ: pre-trigger tails and pile-up
+    # inflated σ 5× on real Cd109 and this gate then dropped 72% of 1-PE pulses.
+    gate_noise = sample_noise_sigma(wave[max(int(b0 / dt_ns), 0):max(int(b1 / dt_ns) + 1, 2)])
+    if gate_noise > 0 and raw_peak < profile.raw_snr_mult * gate_noise and not no_vetoes:
         rows.append({**row_id, "success": False, "reason": "no_raw_pulse"})
         return rows
-
-    post_sat_bins = max(int(profile.post_sat_window_ns / dt_ns), 1)
-    local_mean = sliding_local_mean(wave, post_sat_bins)
-    shifted_mask = (ped_i - local_mean) > profile.post_sat_sigma_mult * noise_i
-    shifted_idx = np.where(shifted_mask)[0]
-    post_sat_offset_bins = int(profile.post_sat_offset_ns / dt_ns)
-    post_sat_cutoff = (
-        max(int(shifted_idx[0]) - post_sat_offset_bins, 0)
-        if len(shifted_idx) > 0 else N
-    )
 
     # Linear (zero-padded) deconvolution — default ON since 2026-07-28.
     # Bare FFT division is CIRCULAR: late-pulse tails wrap into early time, a
@@ -504,15 +502,10 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
     # reproduces the pre-2026-07-28 circular bytes. (Kernel/filter were built
     # + cached above, before the regime gate.)
     y_sub = (wave - ped_i).astype(np.float64)
-    if profile.allow_denoise_raw and args.denoise_raw and not args.no_denoise:
+    if args.denoise_raw and not args.no_denoise:
         y_sub = _denoise_u(y_sub, args)
 
-    if n_fft != N:
-        y_pad = np.zeros(n_fft, dtype=np.float64)
-        y_pad[:N] = y_sub
-        u_rec = deconvolve_hits(y_pad, r_calib, filt)[:N]
-    else:
-        u_rec = deconvolve_hits(y_sub, r_calib, filt)
+    u_rec = _deconvolve(y_sub, r_calib, filt, n_fft)
 
     # ── diagnostic tee (Q5): short-circuits when sink inactive ──
     u_pre_denoise = None
@@ -531,7 +524,7 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
             stft_nperseg_ns=getattr(args, "stft_nperseg_ns", 20.0),
             stft_freq_cutoff_hz=(getattr(args, "stft_freq_cutoff_mhz", 175.0)
                                  * 1e6),
-            stft_amp_threshold=getattr(args, "stft_amp_threshold", 10.0),
+            stft_amp_threshold=getattr(args, "stft_amp_threshold", 5.0),
             stft_threshold_mode=getattr(args, "stft_threshold_mode", "median"),
             stft_fixed_threshold=getattr(args, "stft_fixed_threshold", None),
         )
@@ -544,13 +537,15 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
     # waveform (b0:b1). Deconvolution is nonlocal (filter ringing extends
     # beyond pulses), so raw-quiet ≠ u_rec-quiet in general — documented
     # instrument caveat, unchanged for byte-identity.
+    # KNOWN CAVEAT (denoiser study 2026-10): this is the noise AFTER
+    # denoising. A thresholding denoiser can drive it toward zero, so the bar
+    # collapses and ripples become peaks (default wavelet: 2.7 spurious peaks
+    # per event on the Tang MC). Measuring it BEFORE denoising instead was
+    # tested and rejected: at high cutoffs it disables the denoiser's real
+    # job (rescuing detection), e.g. 0% efficiency at 450 MHz on the Tang MC.
     bl_lo = max(int(b0 / dt_ns), 0)
     bl_hi = min(int(b1 / dt_ns) + 1, N)
-    u_rec_bl = u_rec[bl_lo:bl_hi]
-    u_rec_noise = max(
-        1.4826 * float(np.median(np.abs(u_rec_bl - np.median(u_rec_bl)))),
-        1e-12,
-    )
+    u_rec_noise = _mad_sigma(u_rec[bl_lo:bl_hi])
     peak_thresh = snr_peak_min * u_rec_noise
     dist_bins = max(int(peak_distance_ns / dt_ns), 1)
     peaks, _ = find_peaks(u_rec, height=peak_thresh, distance=dist_bins)
@@ -585,25 +580,24 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
         rows.append({**row_base, "reason": "no_peaks_found"})
         return rows
 
-    # Peak ordering (decision 8). STFT has no reorder (always chronological).
-    if profile.allow_peak_order:
-        peak_order_arg = getattr(args, "peak_order", "auto")
-        if peak_order_arg in (None, "auto"):
-            effective = "tallest" if no_vetoes else "chrono"
-        else:
-            effective = peak_order_arg
-        if effective == "tallest":
-            order = np.argsort(-u_rec[peaks])
-            peaks = peaks[order]
-        elif effective == "first" and len(peaks):
-            # First-significant ordering: peak_id=1 = the FIRST peak that is
-            # >= FIRST_PULSE_MIN_FRAC of the tallest, so the ~7% deconv
-            # pre-pulse ringing side-lobe never wins peak_id=1. No rows are
-            # dropped: sub-threshold peaks keep their rows, ordered after
-            # (both groups stay chronological). Pair with the t_half column
-            # for the MQAna-style half-time timewalk.
-            sig = u_rec[peaks] >= FIRST_PULSE_MIN_FRAC * float(u_rec[peaks].max())
-            peaks = np.concatenate([peaks[sig], peaks[~sig]])
+    # Peak ordering (decision 8).
+    peak_order_arg = getattr(args, "peak_order", "auto")
+    if peak_order_arg in (None, "auto"):
+        effective = "tallest" if no_vetoes else "chrono"
+    else:
+        effective = peak_order_arg
+    if effective == "tallest":
+        order = np.argsort(-u_rec[peaks])
+        peaks = peaks[order]
+    elif effective == "first" and len(peaks):
+        # First-significant ordering: peak_id=1 = the FIRST peak that is
+        # >= FIRST_PULSE_MIN_FRAC of the tallest, so the ~7% deconv
+        # pre-pulse ringing side-lobe never wins peak_id=1. No rows are
+        # dropped: sub-threshold peaks keep their rows, ordered after
+        # (both groups stay chronological). Pair with the t_half column
+        # for the MQAna-style half-time timewalk.
+        sig = u_rec[peaks] >= FIRST_PULSE_MIN_FRAC * float(u_rec[peaks].max())
+        peaks = np.concatenate([peaks[sig], peaks[~sig]])
 
     pad_bins = int(pad_ns / dt_ns)
     windows = find_integration_windows(
@@ -628,10 +622,11 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
                 t_peak_max_ns=profile.t_peak_max_ns,
                 afterpulse_window_ns=profile.afterpulse_window_ns,
                 afterpulse_height_ratio=profile.afterpulse_height_ratio,
-                post_sat_cutoff_bin=post_sat_cutoff,
                 dt_ns=dt_ns,
                 raw_wave=wave,
                 raw_ped=ped_i,
+                raw_delay_bins=raw_delay,
+                raw_local_bins=max(int(round(RAW_LOCAL_BASELINE_NS / dt_ns)), 1),
                 min_raw_amp=profile.no_trigger_amp,
                 min_charge_purity=profile.min_charge_purity,
             )
@@ -644,7 +639,7 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
             # picks a column (`timewalk --time-col t_half`) instead of the
             # column silently changing meaning.
             "peak_id": pk_i + 1, "t_peak": float(t[pk]),
-            "t_half": cfd50_time(u_rec, pk, t),
+            "t_half": cfd_time(u_rec, pk, t),
             "height": float(u_rec[pk]), "charge": charge,
             # Per-peak nPE: deconvolved charge / 1-PE charge (blank when
             # uncalibrated). The physics number of the 0–20 PE re-scope.
@@ -664,7 +659,7 @@ def run_hits(events: Iterable, *, args, profile: HitsProfile,
     :func:`run_area`). The per-channel kernel/filter cache is shared across the
     whole stream. Returns the flat list of result-row dicts; the caller
     (``process_hits`` reader) writes the CSV tables + veto-rate report."""
-    g_cache: Dict[Tuple[int, str], tuple] = {}
+    g_cache: Dict[tuple, tuple] = {}   # see _kernel_for
     rows: List[dict] = []
     for rec in events:
         rows.extend(_process_event(rec, args, profile, templates,

@@ -25,10 +25,11 @@ from typing import List
 
 import pandas as pd
 
+from pmtdeconv.io.data_paths import find_run_files
 from pmtdeconv.io.manifest import maybe_dry_run_exit, write_manifest
 from pmtdeconv.io.offline_format import (
     ALLOWED_TIME_FIELDS, DEFAULT_TIME_FIELD,
-    count_offline_events, detect_offline_channels, iter_offline_run,
+    count_offline_events, iter_offline_run,
 )
 from pmtdeconv.io.output_paths import raw_area_output_dir
 from pmtdeconv.io.schemas import AREA_COLUMNS, HIT_RESULTS_COLUMNS
@@ -67,9 +68,7 @@ def _resolve_offline_files(args, settings, run_num: int) -> List[Path]:
     if not data_dir.exists():
         raise SystemExit(f"offline_data_dir {data_dir} does not exist.")
     glob = args.offline_glob or settings.offline_file_glob or "*_offline.root"
-    cands = sorted(data_dir.glob(glob))
-    matched = [p for p in cands if str(run_num) in p.name]
-    return matched
+    return find_run_files(data_dir, glob, run_num)
 
 
 def run(args: argparse.Namespace) -> int:

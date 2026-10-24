@@ -15,6 +15,46 @@ na22_3ch, cd109, milliqan, lanl_806, lanl_835, lanl_movedBar.
 around output granularity (`hits` vs `area`) plus supporting template,
 area-source, plotting, timewalk, info, and tune commands.
 
+## Contents
+
+- [Applicability domain — what this toolkit is valid for](#applicability-domain--what-this-toolkit-is-valid-for)
+- [Key concepts](#key-concepts)
+- [Project structure](#project-structure)
+- [Install](#install)
+  - [Running the tests](#running-the-tests)
+  - [Getting the data](#getting-the-data)
+  - [Pointing at your data](#pointing-at-your-data)
+- [Quick start](#quick-start)
+- [Pipeline overview](#pipeline-overview)
+- [Detector parameters (Na22 lab — DRS4)](#detector-parameters-na22-lab--drs4)
+- [Data layout](#data-layout)
+- [Using pmtdeconv (unified CLI)](#using-pmtdeconv-unified-cli)
+  - [Subcommand tree](#subcommand-tree)
+  - [Which subcommand do I use?](#which-subcommand-do-i-use)
+  - [Settings layering: dataset/card → config → CLI flag](#settings-layering-datasetcard--config--cli-flag)
+  - [The shipped dataset cards](#the-shipped-dataset-cards)
+  - [Onboarding a new detector with a card](#onboarding-a-new-detector-with-a-card)
+  - [Comparing methods + tuning on real data](#comparing-methods--tuning-on-real-data)
+  - [Saturation handling](#saturation-handling)
+  - [Worked example 1 — Na22 timewalk (the E41473 benchmark)](#worked-example-1--na22-timewalk-the-e41473-benchmark)
+  - [Worked example 2 — LANL pulse-list workflow (offline format)](#worked-example-2--lanl-pulse-list-workflow-offline-format)
+  - [Worked example 3 — build/refit the Cd109 SPE template](#worked-example-3--buildrefit-the-cd109-spe-template)
+  - [Worked example 4 — override defaults / dry-run](#worked-example-4--override-defaults--dry-run)
+  - [Worked example 5 — regime-driven parameter sweeps](#worked-example-5--regime-driven-parameter-sweeps)
+  - [Worked example 6 — debug a specific event](#worked-example-6--debug-a-specific-event)
+  - [Dataset coverage](#dataset-coverage)
+  - [Output directory layout](#output-directory-layout)
+- [Known limitations & deferred follow-ups (0–20 PE re-scope, 2026-07)](#known-limitations--deferred-follow-ups-020-pe-re-scope-2026-07)
+- [Code architecture (for contributors)](#code-architecture-for-contributors)
+  - [Dispatch — pmtdeconv/cli.py](#dispatch--pmtdeconvclipy)
+  - [Command module contract](#command-module-contract)
+  - [Settings resolution — pmtdeconv/presets/__init__.py](#settings-resolution--pmtdeconvpresets__init__py)
+  - [Settings → Detector → engine](#settings--detector--engine)
+  - [Outputs and provenance](#outputs-and-provenance)
+  - [Adding a command, or a flag](#adding-a-command-or-a-flag)
+- [Tests](#tests)
+- [Dependencies](#dependencies)
+
 ## Applicability domain — what this toolkit is valid for
 
 SPE-template deconvolution rests on the linear model **m(t) = SPE ⊛ u(t)**,
@@ -33,16 +73,15 @@ per tube). The toolkit therefore runs **two tracks**:
   carries `npe_raw`/`in_regime`/`npe`; `--in-regime-only` applies the cut) →
   `select multihit` (0–20 PE multi-hit bunches) → `benchmark denoisers`
   (STFT-vs-wavelet under identical conditions) / `plot deconv-value`.
-- **Track 2 (supported): timing through saturation.** Edge timing survives
-  clipping that destroys charge (validated: `t_half` MAD-σ 3× tighter than
-  `t_peak` under saturation), so `timewalk {run, gif}` and the `t_half`
-  column remain first-class on saturated data — but **deconvolved charge is
-  out of domain there** and must not be interpreted (e.g. Na22/Ba133
-  photopeaks at 1.45 kV are far beyond 20 PE).
+- **Saturated data: raw timing only.** A clipped waveform breaks the SPE-sum
+  model — on Na22 Run 65212 its deconvolved charge runs *backwards* with
+  energy (Spearman −0.86 vs raw area). Since 2026-10-23 `hits` and `area` drop
+  clipped waveforms before deconvolution (reason `saturated`, even under
+  `--no-vetoes`). Timewalk on saturated runs uses raw constant-fraction timing
+  from `raw-area mqana` (`raw_timing_run<N>.csv`, `t_cfd`, `--cfd-frac`,
+  default 0.2), which measured better than STFT there (1.56 vs 1.76 ns).
 
-Every waveform is *flagged*, never silently dropped: `saturated` and
-`in_regime` are include-by-default columns with one visible toggle each
-(`plot energy --exclude-saturated`, `hits --in-regime-only`).
+`in_regime` stays an include-by-default column (`hits --in-regime-only` cuts).
 
 ## Key concepts
 
@@ -74,14 +113,12 @@ bailloeulScripts/
 │   │                             (cosine low-pass), dsp.py (FFT deconv,
 │   │                             STFT/wavelet denoise, baseline),
 │   │                             peaks.py (windows, FWHM, CFD-50, vetoes)
-│   ├── utils.py                # Compatibility shim re-exporting core/ for
-│   │                             the local gitignored legacy/ scripts.
-│   │                             Nothing in pmtdeconv/ imports it.
-│   ├── commands/               # One module per leaf subcommand (32 modules)
+│   ├── commands/               # One module per leaf subcommand
 │   ├── pipeline/               # process_{area,hits}, pipeline (the shared
-│   │                             per-event engine), detector, deconv,
-│   │                             denoise, event_source, gain, template*,
-│   │                             scoring, diagnostic sink, timewalk scan
+│   │                             per-event engine), detector, denoise,
+│   │                             event_source, gain, template*, scoring,
+│   │                             calibration (provenance + catalog base),
+│   │                             diagnostic sink, timewalk scan
 │   ├── plotting/               # scatter2d, marginals, energy, analyze,
 │   │                             deconv_value, timewalk_gif_impl, style
 │   ├── presets/                # datasets.py + cards.py + configs.py +
@@ -91,11 +128,11 @@ bailloeulScripts/
 │   └── io/                     # manifest, schemas, root loaders, banner,
 │                                 template + truth CSV I/O, output paths
 │
-├── tests/                      # 33 test modules; 280 tests
+├── tests/                      # pytest suite (`python -m pytest tests/`)
 │   ├── fixtures/               # synth-ROOT builders, regime generators,
 │   │                             golden_spec.py + bless_goldens.py
 │   ├── test_pmtdeconv_cli.py   # CLI wiring + preset resolution
-│   ├── test_golden_fixture.py  # 12 byte-identical goldens
+│   ├── test_golden_fixture.py  # byte-identical goldens (recipes: fixtures/golden_spec.py)
 │   ├── test_flag_plumbing.py   # meta-test: no flag can be silently dropped
 │   └── …                       # math, vetoes, gain, PE gate, tune, sim
 │
@@ -158,7 +195,7 @@ are gitignored, and no real data is needed for either. The ROOT files are large
 and regenerable from fixed RNG seeds; the golden *bytes* depend on the local
 numpy/scipy build, so a shared reference set would fail on other machines for
 reasons unrelated to the code. `bless_goldens.py` builds any missing ROOT
-fixture and regenerates all 12 goldens in one step, so each checkout owns its
+fixture and regenerates every golden in one step, so each checkout owns its
 reference set and byte-identity then guards refactors within it.
 
 Skip the bless step and the ROOT-dependent tests **skip** (each prints what to
@@ -232,8 +269,8 @@ exact path:
   over the search. `--file` names one file, `--data-root` a directory to search.
 
 **SPE templates are never invented.** A template CSV that is configured but
-missing — a typo'd `--template`, a moved file — is a **hard error**, not a
-silent substitution:
+missing — a typo'd `--template`, a moved file — is a **hard error** in `hits`,
+`area` and every `tune` sweep, not a silent substitution:
 
 ```
 SPE template not found: /path/spe.csv
@@ -290,17 +327,18 @@ python -m pmtdeconv <command> --help             # command flag reference
 
 # 3. (Optional) Build the SPE (single-photoelectron) template.
 #    This serves as the "baseline footprint" of one photon for a specific detector.
-#    Needs Cd109 data. Without it, deconv falls back to a generic mathematical
-#    kernel (with a warning); build it to ensure accurate charge scaling:
-python -m pmtdeconv template build --dataset cd109   # → outputs/spe_templates_perfile/spe_templates_perfile.csv
-python -m pmtdeconv template aggregate               # → outputs/spe_templates_perfile/spe_templates_perchannel.csv
+#    Needs Cd109 data. The na22/cd109 defaults ship with the package; a missing
+#    template is an error (or pass --allow-generic-fallback for timing only).
+python -m pmtdeconv template build --dataset cd109   # → outputs/spe_templates_perfile/spe_templates_perchannel.csv
 #    The Na22 preset's default template lives elsewhere, so to USE the one you
 #    just built, pass it explicitly: --template outputs/spe_templates_perfile/spe_templates_perchannel.csv
 
-# 4. Run the canonical Na22 timewalk workflow.
-#    Flat Na22 data is flattened_Run*.root only (no DRSprocessing Run<N>.root),
-#    so use the mqana raw-area source — the default `drs` needs those files:
-python -m pmtdeconv run na22-timewalk --raw-source mqana
+# 4. Run the canonical Na22 timewalk workflow. Its reference window
+#    (--a-ref 100-110 nVs) is defined on DRSprocessing areas, so point it at
+#    the processed file (MQAna narrow-window areas saturate near 34 nVs on
+#    Run 65213 and select nothing — timewalk now says so instead of writing
+#    an empty curve):
+python -m pmtdeconv run na22-timewalk --area-file /path/to/processed/Run65213.root
 python -m pmtdeconv results list
 
 # Tune a denoiser to your detector — --write-presets saves date-stamped
@@ -325,17 +363,26 @@ The deconvolution pipeline follows this sequence:
 1. **Baseline estimation** — finds the quiet pre-pulse level and noise floor so downstream metrics are measured from true zero. *(adaptive sliding window, MAD-based noise, log-σ acceptance; `core.dsp.baseline_noise_bestwindow`)*
 2. **FFT deconvolution** — reverses the PMT's time-smearing, turning broad pulses into sharp spikes. A cosine low-pass filter suppresses high-frequency electronic fuzz. *(`u_rec = IFFT(FFT(y) · filt / FFT(SPE))`)*
 3. **Denoising** — deconvolution mathematically amplifies high-frequency noise, which is mitigated via:
-   - **STFT** — time–frequency masking (`core.dsp.stft_denoise`)
-   - **Wavelet** — frequency-band separation and thresholding (stationary SWT + MAD; `core.dsp.wavelet_denoise`)
+   - **STFT** — time–frequency masking (`core.dsp.stft_denoise`). **The `hits` default since 2026-10.**
+   - **Wavelet** — frequency-band separation and thresholding (stationary SWT + MAD; `core.dsp.wavelet_denoise`). *Experimental* for `hits` since 2026-10; still the `area` denoiser.
+
+   The 2026-10 denoiser study compared the two (and no denoiser) on the Tang MC
+   and on simulations built from real MilliQan and Cd109 noise, each method
+   tuned on one sample and scored on a fresh one: STFT reconstructed charge
+   best on every test set. On real data the cosine cutoff mattered far more
+   than the denoiser (Na22 Run 66810 timing 5.4 ns at 50 MHz vs 10.4 ns at
+   450 MHz), and on the Run 65213 timewalk benchmark wavelet left ~2.5 ns
+   less residual walk at the same resolution. Details:
+   `outputs/denoiser_study_2026-10/` and the vault note.
 4. **Peak finding** — locates sharpened hits above an SNR threshold (`scipy.signal.find_peaks`). *(peak-finding scripts only)*
-5. **Vetoes** — drop obviously-bad reconstructions: saturation, no-trigger, out-of-time (peak outside the signal window), post-saturation shift, afterpulse, charge purity *(peak-finding scripts only)*
+5. **Vetoes** — drop obviously-bad reconstructions: saturated (clipped) waveforms, no-trigger, out-of-time (peak outside the signal window), afterpulse, charge purity *(peak-finding scripts only)*
 6. **Charge integration** — sum the area under each hit: trough-walked window per peak (peak-finding) or fixed window (waveform summary)
 
 ### Three integration modes
 
 | Command | Per trigger | Peak-find? | Area window |
 |---|---|---|---|
-| `hits` (`--denoiser wavelet` default, or `stft`) | All peaks above SNR | ✓ | Trough-walked per peak |
+| `hits` (STFT default; `--denoiser wavelet` experimental, or `none`) | All peaks above SNR | ✓ | Trough-walked per peak |
 | `area` | One row per channel | ✗ | Fixed window (whole-waveform deconv) |
 | `raw-area mqana` | One row per channel | ✗ | Fixed window, **no deconv** |
 
@@ -347,13 +394,15 @@ The deconvolution pipeline follows this sequence:
 | Waveform length | 1024 samples ≈ 517 ns |
 | Pulse polarity | Positive-going |
 | ADC saturation | ~960 mV (rail) |
-| Cosine cutoff | 100 MHz (peak-finding) / 450 MHz (waveform summary wavelet) |
-| Wavelet (active) | `sym8` L5 hard, `thresh_k=2.0` |
+| Cosine cutoff | per dataset: na22 75 MHz (below its fs/32 DRS4 lines at 61.9–396 MHz), cd109 50 MHz, MilliQan/LANL 100 MHz (nulls the 100 MHz line of the 50 MHz clock comb); 100 MHz when nothing sets one |
+| Denoiser — `hits` | STFT (default since 2026-10); `--denoiser wavelet` is experimental |
+| Denoiser — `area` | wavelet `sym8` L5 hard, `thresh_k=2.0` |
 
 Templates are resolved per-channel from the dataset's configured SPE CSV — for
-na22 this is the calibrated Cd109 stacked template under
-`outputs/biexp_fits_Cd109_lab_stacked/` (build it with `template build --dataset
-cd109` + `template aggregate`, or supply your own with `--template`).
+na22 and cd109 this is the calibrated Cd109 stacked template shipped in
+`pmtdeconv/data/templates/`. Build your own with `template build --dataset
+<name>` (it aggregates per channel automatically), or supply one with
+`--template`.
 
 ## Data layout
 
@@ -383,8 +432,9 @@ git SHA, and library versions, plus a `run.log` transcript of everything the
 run printed (resolved paths, template lines, warnings, veto rates). Send
 someone an output directory and it describes itself: `manifest.json` for what
 was configured, `run.log` for what it said. Byte-identical regression is guarded by
-deterministic synthetic-ROOT fixtures (6 flat + 3 object + 1 DRS + 2 offline
-= 12 goldens, blessed per checkout — see [Tests](#tests)).
+deterministic synthetic-ROOT fixtures in four formats (flat, object, DRS,
+offline; listed in `tests/fixtures/golden_spec.py`), blessed per checkout — see
+[Tests](#tests)).
 
 ### Subcommand tree
 
@@ -401,7 +451,7 @@ pmtdeconv
 ├── select   {multihit}                         0–20 PE multi-hit bunches → event_list.csv
 ├── sim      {tang2024}                         Tang 2411.07620 MC (0–20 PE mix + two-hit scan)
 ├── benchmark {denoisers}                       STFT-vs-wavelet verdict (real pipeline, truth metrics)
-├── timewalk {run, gif}                         Δt scan + animation      [track 2: timing-valid through saturation]
+├── timewalk {run, gif}                         Δt scan + animation (raw CFD `t_cfd` on saturated runs)
 ├── plot     {marginals, energy, analyze, deconv-value}  diagnostic + deliverable plots
 ├── info     {datasets, template, offline-file}  inspect a detector or a file
 ├── config   {show, resolve}                     settings (`show` with no name lists presets)
@@ -415,8 +465,8 @@ card `spe_charge:` (the PE anchor), `--pe-band LO HI` (default 0 20),
 `--in-regime-only`, `--veto-profile NAME` (identical thresholds on any
 denoiser — builtins `wavelet_hits`, `stft_hits`, `benchmark_hits`; file-backed
 profiles shadow for explicit names), `--entry-list CSV` (re-process selected
-bunches), `--no-fft-pad` (reproduce pre-2026-07-28 circular-deconvolution
-bytes).
+bunches), `--no-fft-pad` on `hits` / `area` (reproduce the circular-deconvolution
+bytes from before 2026-07-28 for hits, 2026-10-21 for area).
 
 **`--dataset` takes a registry name OR a path to a YAML card** (or a directory
 with `dataset.yaml`). A new detector is onboarded with a card — no Python edit —
@@ -444,16 +494,16 @@ sweep on **real** data against your card's declared figure of merit — see belo
 |---------|-----|
 | run the standard Na22 workflow | `run na22-timewalk` |
 | **onboard a new detector** (no Python edit) | `dataset init <name>` → edit the card → `dataset lint <card>` |
-| build / refit SPE templates | `template build`, `template aggregate` |
+| build / refit SPE templates | `template build` (aggregates per channel; `template aggregate` re-runs that step) |
 | per-trigger whole-waveform deconvolution **summary** | `area` |
-| per-event peak-finding **hits with timing** | `hits` (wavelet) or `hits --denoiser stft` |
+| per-event peak-finding **hits with timing** | `hits` (STFT; `--denoiser wavelet` is experimental) |
 | MQAna-style **narrow-window raw area** from waveforms | `raw-area mqana` |
 | precomputed `area_<board>_<ch>` from a **DRSprocessing flat tree** | `raw-area drs` |
 | LANL **pulse-list** (`*_offline.root`) → area + per-channel timing | `raw-area offline` |
 | Δt scan against any (area, pulse) CSV pair | `timewalk run` (CSV-only) or `timewalk gif` (animated) |
 | ch1-vs-ch2 area heatmap + 1D marginals | `plot marginals` |
 | four-method energy spectra (raw / FFT / STFT / wavelet) | `plot energy` |
-| charge/time/height diagnostic plots from a pulse CSV | `plot analyze` |
+| charge/time/height diagnostic plots from a hits CSV | `plot analyze --hits-csv <file>` |
 | inspect a detector, template, or data file | `info {datasets, template, offline-file}` |
 | list every named preset / show one | `config show` / `config show <name>` |
 | find prior outputs / maintain the index | `results list` / `results index` |
@@ -621,25 +671,34 @@ python -m pmtdeconv tune fom --dataset ./mydet.yaml --runs 42 \
 ### Saturation handling
 
 Saturation is detected from the **flat plateau** at the rail (universal — no
-per-detector threshold). Saturated waveforms are **kept and flagged**
-(`saturated` column) rather than dropped, so timing survives; isolate them in the
-energy spectra with `plot energy --exclude-saturated`.
+per-detector threshold). `hits` and `area` **drop** a clipped waveform before
+deconvolution (reason `saturated`; no opt-out), because its deconvolved charge
+is not physical. `raw-area mqana` still times it from the raw rising edge
+(`raw_timing_run<N>.csv`, column `t_cfd`), which is what timewalk uses on
+saturated runs.
 
-### Worked example 1 — Na22 timewalk (the 2026-05 settled config)
+### Worked example 1 — Na22 timewalk (the E41473 benchmark)
 
 ```bash
-python -m pmtdeconv run na22-timewalk
+python -m pmtdeconv run na22-timewalk --area-file /path/to/processed/Run65213.root
 
-# Or run the individual steps:
-python -m pmtdeconv raw-area drs --dataset na22 --runs 65213
-python -m pmtdeconv hits --dataset na22 --runs 65213 --preset na22-timewalk
+# Or run the individual steps (no deconvolution: Run 65213 is ~86% saturated):
+python -m pmtdeconv raw-area mqana --dataset na22 --runs 65213 --out-dir tw/timing
+python -m pmtdeconv raw-area drs --dataset na22 --runs 65213 --file /path/to/processed/Run65213.root --out-dir tw/area
 python -m pmtdeconv timewalk run --dataset na22 --runs 65213 \
-    --preset na22-timewalk
+    --area-csv tw/area/area_drs_run65213.csv \
+    --hits-csv tw/timing/raw_timing_run65213.csv --time-col t_cfd
 ```
 
-The preset bakes in the settings that produced σ ≈ 1.33 ns at the
-[170, 175] nVs CH2 band (vs ELOG ~1.56 ns) and a 7.74 ns walk length
-(vs 13.4 ns raw `t_half`).
+Timing estimators on Run 65213 (2026-10-21; first 30k events, DRS area axis,
+walk-corrected robust σ on the 5262 events every method kept, 68% bootstrap):
+
+| Timing | σ |
+|---|---|
+| raw CFD-20 (`t_cfd`, the recipe) | 1.56 (1.53–1.59) ns |
+| STFT `t_half`, cosine 50 MHz | 1.60 ns |
+| STFT `t_half`, cosine 450 MHz (old recipe) | 1.76 (1.72–1.78) ns |
+| raw CFD-50 | 1.84 ns |
 
 ### Worked example 2 — LANL pulse-list workflow (offline format)
 
@@ -665,12 +724,14 @@ To inspect a pulse-list file before running: `pmtdeconv info offline-file <path>
 ### Worked example 3 — build/refit the Cd109 SPE template
 
 ```bash
-python -m pmtdeconv template build --dataset cd109   # one dataset at a time
-python -m pmtdeconv template aggregate               # weighted avg → per-channel
+python -m pmtdeconv template build --dataset cd109   # per-file fits, then per-channel average
 ```
 
-The per-channel CSV `outputs/spe_templates_perfile/spe_templates_perchannel.csv`
-is what `--dataset cd109/na22` points at by default.
+It writes `outputs/spe_templates_perfile/spe_templates_perchannel.csv` (plus
+the per-file CSV it averages; `--no-aggregate` stops there, and `template
+aggregate` re-runs the averaging). The `cd109`/`na22` defaults use the template
+shipped in `pmtdeconv/data/templates/`; to use yours, pass it with `--template`
+or set `template:` in your dataset card.
 
 ### Worked example 4 — override defaults / dry-run
 
@@ -896,6 +957,23 @@ silently trusted:
   validation target (out of domain).
 - `tune wavelet` / `tune stft` still build their own arg namespaces (bypass
   Detector).
+- **Open: gates for obviously flawed waveforms (2026-10-24).** The event
+  gates (`baseline_quality`, `baseline_failed`) only inspect the first
+  200–600 ns, so an electronic fault that starts after the trigger passes.
+  Probed with synthetic faults: a post-trigger drift, a +200 mV step and a
+  100 mV square block each kept every event with 6–13 fake pulses. Two
+  prototyped gates separate them:
+  - **tail shift**: |median of the last 60 ns − pedestal|. Drift/step/sine
+    faults give 170–270 mV; real Cd109 65267 loses 0.3% at a 50 mV cut.
+  - **bipolarity**: −min/max of the baseline-subtracted record. Oscillation,
+    ringing and noise give 0.9–1.1, unipolar PMT pulses ~0; Cd109 loses
+    0.6–1.4% at 0.8.
+
+  A record-wide sample-noise ratio does *not* work (oscillation is smooth
+  sample to sample), and a one-sided square block needs a shape test against
+  the SPE template. Before choosing cuts, inspect the real waveforms each gate
+  rejects. The ~225 ns slow oscillation on 36% of Cd109 CH2 events is the
+  first real target.
 
 ## Code architecture (for contributors)
 
@@ -1009,12 +1087,12 @@ From a clean checkout:
 pip install -e .[dev]
 
 # 2. Build the synthetic ROOT fixtures + bless this checkout's goldens.
-#    Required once; without it the 12 golden tests fail (they compare against
+#    Required once; without it the golden tests fail (they compare against
 #    reference bytes that are gitignored, not shipped).
 python tests/fixtures/bless_goldens.py
 
 # 3. Run:
-python -m pytest tests/                                # full suite (280 tests)
+python -m pytest tests/                                # full suite
 python -m pytest tests/test_pmtdeconv_cli.py -v        # CLI wiring + preset resolution
 python -m pytest tests/test_golden_fixture.py -v       # byte-identical fixtures
 python -m pytest tests/test_flag_plumbing.py -v        # no CLI flag silently dropped
@@ -1023,7 +1101,7 @@ python -m pytest tests/test_truth_schema.py -v         # regime truth CSV schema
 python -m pytest tests/test_vetoes.py -v               # math
 ```
 
-The full suite should pass before release. The 12 byte-identical goldens cover
+The full suite should pass before release. The byte-identical goldens cover
 four dataset formats: flat (`tests/fixtures/flattened_Run0.root`), object
 (`tests/fixtures/MilliQan_Run835.99_triple.root`), DRSprocessing
 (`tests/fixtures/processed/Run0.root`), and offline

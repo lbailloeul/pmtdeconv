@@ -47,7 +47,7 @@ _ENTRIES: List[TemplateCatalogEntry] = [
 class TemplateCatalog(Catalog):
     """Read-only ``pmt_type`` -> template registry (step 3).
 
-    Step 5's unified ``Calibration``/``Catalog`` work may add a writable
+    A file-backed ``Catalog`` subclass may later add a writable
     backing store; for now this is seeded in-code from the templates we ship.
     """
     family = "template"

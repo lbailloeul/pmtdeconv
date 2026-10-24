@@ -48,13 +48,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         "[__<preset>]/.")
     g.add_argument("--ref-branch", type=str, default="d0_ch1")
     g.add_argument("--scan-branch", type=str, default="d0_ch2")
-    g.add_argument("--time-col", choices=("t_peak", "t_half"),
+    g.add_argument("--time-col", choices=("t_peak", "t_half", "t_cfd"),
                    default="t_peak",
                    help="Pulse-CSV timestamp column for Δt. `t_peak` "
                         "(default): deconv apex time. `t_half`: CFD-50 "
                         "rising-edge crossing (MQAna `halftime`) — the "
                         "lower-jitter estimator; pair the `hits` run with "
-                        "--peak-order first.")
+                        "--peak-order first. `t_cfd`: raw (no deconvolution) "
+                        "constant-fraction time from `raw-area mqana`'s "
+                        "raw_timing CSV — the timing for saturated runs.")
     g.add_argument("--a-ref", type=float, nargs=2, default=(100_000.0, 110_000.0),
                    metavar=("LO", "HI"),
                    help="Reference-channel area window in pVs (default "
@@ -163,6 +165,9 @@ def run(args: argparse.Namespace) -> int:
         reverse=args.reverse,
     )
     print(f"  merged events (after a_ref cut): {int(scan.base_mask.sum())}")
+    if not scan.base_mask.any():
+        from pmtdeconv.pipeline.timewalk import no_events_message
+        raise SystemExit(no_events_message(scan, args.a_ref, args.area_units))
     print(f"  scan bins: {len(scan.summary)}")
 
     run_id = (settings.runs or ["unknown"])[0]

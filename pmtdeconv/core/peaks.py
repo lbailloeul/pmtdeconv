@@ -2,8 +2,8 @@
 """Per-peak charge integration windows, FWHM, and veto logic.
 
 Moved verbatim from ``pmtdeconv/utils.py`` (2026-05-31 domain split). The
-``_walk_to_trough_*`` helpers are intentionally public-importable (the legacy
-scripts and pipeline both use them) and re-exported through ``pmtdeconv.utils``.
+``_walk_to_trough_*`` helpers are intentionally importable despite the
+underscore (the pipeline and the veto tests both use them).
 """
 import numpy as np
 
@@ -92,9 +92,10 @@ def find_integration_windows(u_rec, peaks, pad_bins, neighbor_min_ratio=0.1,
     return out
 
 
-def cfd50_time(u, pk, t):
-    """50%-of-peak rising-edge crossing time ('half-time', CFD-50) for the
-    pulse peaking at index ``pk``, sub-sample linear-interpolated.
+def cfd_time(u, pk, t, frac=0.5):
+    """``frac``-of-peak rising-edge crossing time (constant-fraction
+    discriminator) for the pulse peaking at index ``pk``, sub-sample
+    linear-interpolated. ``frac=0.5`` is the 'half-time' (CFD-50).
 
     The MQAna ``halftime`` estimator: walk left from the apex to the first
     sample at or below half-maximum and interpolate the crossing. Lower
@@ -110,7 +111,7 @@ def cfd50_time(u, pk, t):
     peak_val = float(u[pk])
     if not np.isfinite(peak_val) or peak_val <= 0:
         return float(t[pk])
-    vthr = 0.5 * peak_val
+    vthr = frac * peak_val
     j = int(pk)
     while j > 0 and u[j] > vthr:
         j -= 1
@@ -168,6 +169,11 @@ def fwhm_ns(u, pk, dt_ns, max_half_ns=120.0):
 # Per-peak veto logic
 # ═══════════════════════════════════════════════════════════════════
 
+# Pre-pulse span the no_raw_peak height is measured from: a pulse riding a
+# preceding pulse's recovery reads its own height, not the sag.
+RAW_LOCAL_BASELINE_NS = 20.0
+
+
 def apply_peak_vetoes(
     pk, pk_i, peaks, u_rec, t, windows, pulse_widths, N,
     *,
@@ -175,12 +181,13 @@ def apply_peak_vetoes(
     t_peak_max_ns=None,
     afterpulse_window_ns=40.0,
     afterpulse_height_ratio=5.0,
-    post_sat_cutoff_bin=None,
     dt_ns,          # required: the silent 1.25 ns default matched no dataset
     raw_wave=None,
     raw_ped=0.0,
     min_raw_amp=15.0,
     min_charge_purity=0.5,
+    raw_delay_bins=0,
+    raw_local_bins=0,
 ):
     """
     Apply per-peak vetoes. Returns (success, reason, charge).
@@ -189,11 +196,17 @@ def apply_peak_vetoes(
       1. out_of_time       — peak before t_peak_min_ns or after t_peak_max_ns
                              (a plain physical-time-window cut; renamed
                              2026-05-30 from the misnomer "fft_wraparound")
-      2. no_raw_peak       — max raw amplitude in window < min_raw_amp ADC above baseline
+      2. no_raw_peak       — max raw amplitude in window < min_raw_amp ADC above baseline;
+                             the raw window is shifted by ``raw_delay_bins`` (the SPE
+                             template's peak delay), since the raw pulse peaks that
+                             long after the deconvolved arrival. With
+                             ``raw_local_bins`` the height is measured from
+                             the lower of the pedestal and the median of the
+                             preceding ``raw_local_bins`` samples, so a pulse
+                             in a post-pulse baseline sag is not lost
       3. afterpulse_veto   — small peak within fixed ns window of a much taller peak
-      4. post_sat_shift    — peak at or after the first baseline-shifted bin
-      5. negative_charge   — integrated charge < 0
-      6. poor_pulse_quality — positive area fraction < min_charge_purity
+      4. negative_charge   — integrated charge < 0
+      5. poor_pulse_quality — positive area fraction < min_charge_purity
                               (window dominated by ringing/negative lobes)
     """
     lo, hi = windows[pk_i]
@@ -211,7 +224,12 @@ def apply_peak_vetoes(
 
     # Per-peak raw amplitude veto — reject if no real signal in the raw waveform
     if raw_wave is not None:
-        raw_amp_in_window = float(np.max(raw_wave[lo:min(hi, N)]) - raw_ped)
+        r_lo = min(lo + raw_delay_bins, N - 1)
+        r_hi = max(min(hi + raw_delay_bins, N), r_lo + 1)
+        ref = raw_ped
+        if raw_local_bins and r_lo >= raw_local_bins:
+            ref = min(raw_ped, float(np.median(raw_wave[r_lo - raw_local_bins:r_lo])))
+        raw_amp_in_window = float(np.max(raw_wave[r_lo:r_hi]) - ref)
         if raw_amp_in_window < min_raw_amp:
             return False, "no_raw_peak", charge
 
@@ -229,10 +247,6 @@ def apply_peak_vetoes(
             dist_to_edge = min(abs(pk - other_lo), abs(pk - other_hi))
             if dist_to_edge <= veto_bins:
                 return False, "afterpulse_veto", charge
-
-    # Post-saturation shift veto (blanket: everything after first shifted bin)
-    if post_sat_cutoff_bin is not None and pk >= post_sat_cutoff_bin:
-        return False, "post_sat_shift", charge
 
     # Negative charge veto
     if charge < 0:

@@ -10,14 +10,17 @@ hand them to ``run_hits``, write the CSV tables, and emit the veto-rate report.
 This mirrors how :mod:`pmtdeconv.pipeline.process_area` feeds ``run_area``.
 
 Polarity is applied once, in the event source (the 2026-06-10 flat-path bug
-class). Both the legacy scripts and ``pmtdeconv.commands.hits`` call these; the
-byte-identical regression tests (``tests/test_golden_fixture.py``) confirm the
-relocation didn't drift.
+class). Callers (``pmtdeconv.commands.hits`` and the ``tune`` sweeps) must set
+``args.out_dir`` and ``args.data_root``: there are no hardcoded fallbacks. Until
+2026-09-23 an unset ``out_dir`` silently wrote into a Na22-named folder, apart
+from the manifest. The golden tests (``tests/test_golden_fixture.py``) pin the
+output bytes.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
+from pmtdeconv.io.data_paths import find_run_files
 from pmtdeconv.pipeline.deconv_pulse_results import (
     print_deconv_pulse_summary,
     write_deconv_pulse_result_tables,
@@ -29,42 +32,34 @@ from pmtdeconv.pipeline.pipeline import (   # noqa: F401
     HitsProfile,
     WAVELET_PROFILE,
     STFT_PROFILE,
-    _process_event,
     run_hits,
 )
-from pmtdeconv.pipeline.template import FALLBACK_TEMPLATE   # noqa: F401
 
 
 def _hits_profile(args, default_kind: str) -> HitsProfile:
     """The HitsProfile for this run.
 
     An EXPLICITLY-selected veto profile (``--veto-profile``; the Detector
-    carries the resolved object) is honored with ALL behavior switches on —
-    identical thresholds regardless of denoiser, the fair-benchmark condition.
-    Otherwise the legacy per-denoiser constant (byte-identical default path).
+    carries the resolved object) gives identical thresholds regardless of
+    denoiser, the fair-benchmark condition. Otherwise the per-denoiser
+    default profile.
     """
     vp = getattr(args, "veto_profile_obj", None)
     if vp is not None and getattr(args, "veto_profile_explicit", False):
-        return HitsProfile.from_veto_profile(vp, denoiser_kind=default_kind,
-                                             allow_all=True)
+        return HitsProfile.from_veto_profile(vp, denoiser_kind=default_kind)
     return STFT_PROFILE if default_kind == "stft" else WAVELET_PROFILE
 
-# Defaults matching the legacy module so behavior is byte-identical when no
-# override is supplied via args.
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-OUTPUTS_DIR_DEFAULT = PROJECT_ROOT / "outputs"
-DATA_DIR_DEFAULT = PROJECT_ROOT.parent.parent.parent / "data"
-FIT_CSV_DEFAULT = OUTPUTS_DIR_DEFAULT / "biexp_fits_Na22_lab" / "biexp_fit_results.csv"
 
+def _load_channel_templates(csv_path):
+    """Per-event biexp CSV → per-branch median, via the unified loader, with
+    per-channel printing.
 
-def _legacy_load_channel_templates(csv_path):
-    """Per-event biexp CSV → per-branch median, via the unified loader.
-
-    Thin wrapper around ``pmtdeconv.io.templates.load_template`` that preserves
-    the original verbose per-channel printing of the pre-PR-3 wavelet pipeline.
+    Strict: the command has already checked the path
+    (``Template.from_settings`` / ``configured_template_csv``), so a missing
+    file here is a bug and must fail rather than become the generic kernel.
     """
     from pmtdeconv.io.templates import load_template
-    templates = load_template(csv_path, strict=False, verbose=True)
+    templates = load_template(csv_path, verbose=True)
     for branch, tmpl in templates.items():
         if tmpl.get("kind") == "sampled":
             print(f"  {branch}: sampled kernel ({len(tmpl['y'])} samples)")
@@ -72,6 +67,12 @@ def _legacy_load_channel_templates(csv_path):
         print(f"  {branch}: τ_rise={tmpl['tau_rise']:.3f} ns, "
               f"τ_fall={tmpl['tau_fall']:.3f} ns, σ={tmpl['sigma']:.3f} ns")
     return templates
+
+
+# Used only when no cutoff reached args (Settings itself defaults to 100). The
+# cosine gain is 0 at its cutoff, so 100 MHz nulls the dominant line of the
+# 50 MHz DAQ-clock comb on MilliQan/V1743 data (vault note 20).
+FALLBACK_CUTOFF_MHZ = 100.0
 
 
 def _templates_for_run(args):
@@ -93,7 +94,7 @@ def _templates_for_run(args):
         print("[template] generic kernel for every branch "
               "(no per-channel SPE CSV resolved).")
         return {}
-    return _legacy_load_channel_templates(Path(fit_csv))
+    return _load_channel_templates(Path(fit_csv))
 
 
 def _entry_filter(args, events):
@@ -116,10 +117,11 @@ def process_run_object(args, diagnostic_sink=None):
 
     Resolves the ROOT file + channel set per run, streams events through
     :func:`pmtdeconv.pipeline.event_source.iter_object_run_events`, and feeds
-    :func:`pmtdeconv.pipeline.pipeline.run_hits` (wavelet profile). Only the I/O
-    differs from the flat :func:`process_run`.
+    :func:`pmtdeconv.pipeline.pipeline.run_hits` with the profile of the
+    configured denoiser (STFT or wavelet/none). Only the I/O differs from the
+    flat readers.
     """
-    from pmtdeconv.io.object_format import detect_populated_channels
+    from pmtdeconv.io.object_format import detect_populated_channels, read_dt_ns
     from pmtdeconv.pipeline.diagnostic import noop_sink
     from pmtdeconv.pipeline.event_source import iter_object_run_events
     sink = diagnostic_sink if diagnostic_sink is not None else noop_sink()
@@ -128,43 +130,37 @@ def process_run_object(args, diagnostic_sink=None):
     polarity = int(getattr(args, "polarity", -1))
     entry_stop = args.entry_stop
     step_size = 100
-    cosine_cutoff_mhz = float(getattr(args, "cosine_cutoff_mhz", None) or 450.0)
+    kind = "stft" if getattr(args, "denoiser", "wavelet") == "stft" else "wavelet"
+    cosine_cutoff_mhz = float(getattr(args, "cosine_cutoff_mhz", None)
+                              or FALLBACK_CUTOFF_MHZ)
 
-    explicit_out_dir = getattr(args, "out_dir", None)
-    if explicit_out_dir is not None:
-        out_dir = Path(explicit_out_dir)
-    else:
-        out_dir = (OUTPUTS_DIR_DEFAULT
-                   / f"deconv_pulse_object_lab_cosine_wavelet{args.out_suffix}")
+    out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ch_templates = _templates_for_run(args)
 
-    print(f"Runs: {args.runs}  (object format)")
-    print(f"Sample interval: dt_ns = {dt_ns}  ({1.0/dt_ns:.3f} GSa/s)")
+    print(f"Runs: {args.runs}  (object format, denoiser {kind})")
+    print(f"Sample interval: dt_ns = {dt_ns or 'auto (per run file)'}")
     print(f"Filter: cosine (cutoff={cosine_cutoff_mhz} MHz)")
     print(f"Polarity: {polarity:+d}")
     print(f"Output: {out_dir}")
 
-    explicit_data_root = getattr(args, "data_root", None)
-    if explicit_data_root is not None:
-        data_dir = Path(explicit_data_root)
-    else:
-        data_dir = (Path(DATA_DIR_DEFAULT)
-                    / (getattr(args, "data_subdir", None) or "835_real"))
+    data_dir = Path(args.data_root)
     file_glob = getattr(args, "file_glob", None) or "MilliQan_Run*_triple.root"
     tree_name = getattr(args, "tree", None) or "Events"
 
     def _events():
         for run in args.runs:
-            candidates = sorted(data_dir.glob(file_glob))
-            candidates = [p for p in candidates if str(run) in p.name]
+            candidates = find_run_files(data_dir, file_glob, run)
             if not candidates:
                 print(f"[skip] no object-format ROOT matching run {run} under {data_dir}")
                 continue
             root_path = candidates[0]
             print(f"\n================ Run {run} ================")
             print(f"Opening: {root_path}")
+            run_dt = dt_ns or read_dt_ns(root_path, tree_name=tree_name)
+            if not dt_ns:
+                print(f"  dt_ns (auto-detected): {run_dt} ns")
 
             explicit_branches = getattr(args, "branches", None)
             if isinstance(explicit_branches, list) and explicit_branches:
@@ -175,12 +171,12 @@ def process_run_object(args, diagnostic_sink=None):
                       f"{branches[:4]}{'...' if len(branches) > 4 else ''}")
 
             yield from iter_object_run_events(
-                root_path, run, dt_ns=dt_ns, polarity=polarity,
+                root_path, run, dt_ns=run_dt, polarity=polarity,
                 branches=branches, entry_stop=entry_stop, step_size=step_size,
                 tree_name=tree_name,
             )
 
-    results = run_hits(_entry_filter(args, _events()), args=args, profile=_hits_profile(args, "wavelet"),
+    results = run_hits(_entry_filter(args, _events()), args=args, profile=_hits_profile(args, kind),
                        templates=ch_templates, cosine_cutoff_mhz=cosine_cutoff_mhz,
                        sink=sink)
     tables = write_deconv_pulse_result_tables(results, out_dir)
@@ -208,22 +204,11 @@ def process_run(args, diagnostic_sink=None):
 
     entry_stop = args.entry_stop
     step_size = 500
-    # Wavelet-path fallback is 450 MHz vs the STFT path's 100 — see the
-    # benchmark-confound note in process_run_stft.
-    cosine_cutoff_mhz = float(getattr(args, "cosine_cutoff_mhz", None) or 450.0)
+    cosine_cutoff_mhz = float(getattr(args, "cosine_cutoff_mhz", None)
+                              or FALLBACK_CUTOFF_MHZ)
 
-    explicit_data_root = getattr(args, "data_root", None)
-    if explicit_data_root is not None:
-        data_dir = Path(explicit_data_root)
-    else:
-        data_subdir = getattr(args, "data_subdir", None) or "Na22_lab"
-        data_dir = Path(DATA_DIR_DEFAULT) / data_subdir
-    explicit_out_dir = getattr(args, "out_dir", None)
-    if explicit_out_dir is not None:
-        out_dir = Path(explicit_out_dir)
-    else:
-        out_dir = (OUTPUTS_DIR_DEFAULT
-                   / f"deconv_pulse_Na22_lab_cosine_wavelet{args.out_suffix}")
+    data_dir = Path(args.data_root)
+    out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ch_templates = _templates_for_run(args)
@@ -245,7 +230,9 @@ def process_run(args, diagnostic_sink=None):
         for run, root_path in resolve_runs(data_dir, args.runs, kind="flat"):
             yield from iter_flat_run(
                 str(root_path), run, dt_ns=dt_ns, polarity=polarity,
-                branches=None, entry_start=0, entry_stop=entry_stop,
+                branches=getattr(args, "branches", None), entry_start=0,
+                entry_stop=entry_stop,
+                tree_name=getattr(args, "tree", None) or "waveforms",
                 step_size=step_size,
             )
 
@@ -269,9 +256,8 @@ def process_run_stft(args, diagnostic_sink=None):
     (golden: ``deconv_pulses_stft_run0.csv``).
 
     STFT knobs come from ``args``: ``stft_nperseg_ns`` (default 20.0),
-    ``stft_freq_cutoff_mhz`` (175.0), ``stft_amp_threshold`` (10.0).
+    ``stft_freq_cutoff_mhz`` (175.0), ``stft_amp_threshold`` (5.0).
     """
-    from pmtdeconv.io.templates import load_template
     from pmtdeconv.pipeline.diagnostic import noop_sink
     from pmtdeconv.pipeline.event_source import iter_flat_run
     sink = diagnostic_sink if diagnostic_sink is not None else noop_sink()
@@ -280,29 +266,15 @@ def process_run_stft(args, diagnostic_sink=None):
     polarity = int(getattr(args, "polarity", 1))
     entry_stop = args.entry_stop
     step_size = 500
-    # STFT path historically uses 100 MHz (narrower than the wavelet 450).
-    # BENCHMARK CONFOUND: this fallback divergence means a bare
-    # `hits --denoiser stft` vs `hits --denoiser wavelet` differs in the
-    # deconvolution filter, not just the denoiser — any fair comparison must
-    # pass an explicit --cosine-cutoff-mhz (the benchmark harness does).
-    cosine_cutoff_mhz = float(getattr(args, "cosine_cutoff_mhz", None) or 100.0)
+    cosine_cutoff_mhz = float(getattr(args, "cosine_cutoff_mhz", None)
+                              or FALLBACK_CUTOFF_MHZ)
     stft_freq_cutoff_hz = getattr(args, "stft_freq_cutoff_mhz", 175.0) * 1e6
     stft_nperseg_ns = getattr(args, "stft_nperseg_ns", 20.0)
-    stft_amp_threshold = getattr(args, "stft_amp_threshold", 10.0)
+    stft_amp_threshold = getattr(args, "stft_amp_threshold", 5.0)
 
-    explicit_out_dir = getattr(args, "out_dir", None)
-    if explicit_out_dir is not None:
-        out_dir = Path(explicit_out_dir)
-    else:
-        out_dir = OUTPUTS_DIR_DEFAULT / "deconv_pulse_Na22_lab_cosine_advanced"
+    out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    explicit_data_root = getattr(args, "data_root", None)
-    if explicit_data_root is not None:
-        data_dir = Path(explicit_data_root)
-    else:
-        data_subdir = getattr(args, "data_subdir", None) or "Na22_lab"
-        data_dir = Path(DATA_DIR_DEFAULT) / data_subdir
+    data_dir = Path(args.data_root)
 
     ch_templates = _templates_for_run(args)
     for branch, tmpl in ch_templates.items():
@@ -324,7 +296,9 @@ def process_run_stft(args, diagnostic_sink=None):
         for run, root_path in resolve_runs(data_dir, args.runs, kind="flat"):
             yield from iter_flat_run(
                 str(root_path), run, dt_ns=dt_ns, polarity=polarity,
-                branches=None, entry_start=0, entry_stop=entry_stop,
+                branches=getattr(args, "branches", None), entry_start=0,
+                entry_stop=entry_stop,
+                tree_name=getattr(args, "tree", None) or "waveforms",
                 step_size=step_size,
             )
 
