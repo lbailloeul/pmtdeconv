@@ -119,3 +119,12 @@ def test_deconvolution_inverts_a_convolution():
     flat = np.ones(N)                       # no filtering: exact inversion
     recovered = deconvolve_hits(measured, kernel, flat)
     assert np.allclose(recovered, signal, atol=1e-6)
+
+
+@pytest.mark.parametrize("sigma", [0.3, 0.5, 2.0])
+def test_sample_noise_sigma_survives_integer_adc_quantization(sigma):
+    from pmtdeconv.core.dsp import sample_noise_sigma
+    x = np.random.default_rng(0).normal(0.0, sigma, 2000)
+    assert abs(sample_noise_sigma(x) - sigma) < 0.1 * sigma
+    quantized = sample_noise_sigma(np.round(x))
+    assert 0.2 < quantized < 2.0 * max(sigma, 0.5), quantized

@@ -36,6 +36,7 @@ same bytes.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -359,7 +360,6 @@ def write_run(out_dir, run_number: int, waves2d: np.ndarray,
     import warnings
     import pandas as pd
     import uproot
-    from pathlib import Path
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     root_path = out_dir / f"flattened_Run{run_number}.root"
@@ -375,11 +375,10 @@ def write_run(out_dir, run_number: int, waves2d: np.ndarray,
 
 
 def write_template_csv(out_dir, undershoot: bool = True,
-                       kernel: str = "r5912") -> "Path":  # noqa: F821
+                       kernel: str = "r5912") -> Path:
     """Write the central-parameter kernel as a SAMPLED template CSV
     (schema #4: branch, t_ns, r) — the calibrated r_calib of the paper."""
     import pandas as pd
-    from pathlib import Path
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     kern = central_kernel(undershoot=undershoot, kernel=kernel)
@@ -390,14 +389,13 @@ def write_template_csv(out_dir, undershoot: bool = True,
     return path
 
 
-def write_veto_profile(out_dir) -> "Path":     # noqa: F821
+def write_veto_profile(out_dir) -> Path:
     """Write the ``tang2024_hits`` file-backed veto profile.
 
     The ``benchmark_hits`` thresholds under their own name, so a simulation
     run records which profile it used.
     """
     from dataclasses import replace
-    from pathlib import Path
     from pmtdeconv.presets.veto_profiles import (BENCHMARK_HITS_PROFILE,
                                                  save_veto_profile_yaml)
     prof = replace(BENCHMARK_HITS_PROFILE, name="tang2024_hits",
@@ -406,12 +404,11 @@ def write_veto_profile(out_dir) -> "Path":     # noqa: F821
 
 
 def write_dataset_card(out_dir, template_csv, undershoot: bool = True,
-                       kernel: str = "r5912") -> "Path":   # noqa: F821
+                       kernel: str = "r5912") -> Path:
     """Write a dataset card so ``--dataset <out_dir>`` runs the whole
     pipeline on the simulation with the exact PE anchor + the tailored
     ``tang2024_hits`` veto profile (written beside it)."""
     import yaml
-    from pathlib import Path
     out_dir = Path(out_dir)
     card = {
         "name": "tang2024",

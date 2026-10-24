@@ -403,7 +403,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raise SystemExit(
                 f"\nMissing dependency '{name}'. pmtdeconv needs its scientific "
                 f"stack installed.\n"
-                f"  Install everything in one step (from the bailloeulScripts/ "
+                f"  Install everything in one step (from the repo root, the "
                 f"directory containing pyproject.toml):\n"
                 f"      pip install -e .\n"
                 f"  (pulls in numpy, scipy, pandas, matplotlib, uproot, awkward, "

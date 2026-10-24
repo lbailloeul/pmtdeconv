@@ -18,7 +18,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 # Repo root (still used by several commands to resolve default output
 # directories, fixtures, etc.).

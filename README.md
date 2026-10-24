@@ -1,4 +1,4 @@
-# bailloeulScripts — pmtdeconv
+# pmtdeconv
 
 `pmtdeconv` is a waveform-processing toolkit that recovers precise particle hit
 times and charges from smeared photomultiplier tube (PMT) signals. Because a
@@ -104,7 +104,7 @@ time-walk and separates hits that arrive only nanoseconds apart.
 ## Project structure
 
 ```
-bailloeulScripts/
+pmtdeconv/ (repo root)
 ├── pmtdeconv/                  # Self-contained CLI package. Everything
 │   │                             needed to run the CLI lives in here.
 │   ├── cli.py, __main__.py     # Argparse tree + two-stage dispatcher
@@ -136,14 +136,16 @@ bailloeulScripts/
 │   ├── test_flag_plumbing.py   # meta-test: no flag can be silently dropped
 │   └── …                       # math, vetoes, gain, PE gate, tune, sim
 │
+├── data_processing/            # companion package `dataprep`: DRS binary → ROOT
+│                                 (needs PyROOT; installed separately)
 ├── outputs/                    # CLI outputs (gitignored)
 ├── pyproject.toml
 ├── README.md
 └── .gitignore
 ```
 
-The tracked tree is just **four entries** (`pmtdeconv/`, `tests/`,
-`README.md`, `pyproject.toml`) plus the gitignored `outputs/`. `pmtdeconv/` is
+The tracked tree is `pmtdeconv/`, `tests/`, `data_processing/`, `README.md`,
+`pyproject.toml` and `LICENSE`, plus the gitignored `outputs/`. `pmtdeconv/` is
 **self-contained** — it imports nothing from sibling directories, only from
 within its own tree and from the scientific Python stack (numpy, scipy, pandas,
 matplotlib, uproot, awkward, PyWavelets), which `pip install -e .` pulls in
@@ -171,7 +173,7 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 Then install:
 
 ```bash
-cd bailloeulScripts                # the dir containing pyproject.toml
+cd pmtdeconv                       # the repo root (holds pyproject.toml)
 pip install -e .                   # runtime deps (numpy/scipy/uproot/PyWavelets/…)
 # to also run the test suite:
 pip install -e ".[dev]"            # + pytest, pytest-cov
@@ -212,10 +214,8 @@ Starting from raw DRS scope binaries (`Run<N>.dat`)? The companion package
 is installed separately; see `data_processing/README.md`.
 
 The ROOT files are **not** in this repository — they are far too large, and
-they are not yours to redistribute. They live in the group's internal share:
-
-> **TODO (Leo):** internal location + access instructions go here.
-> e.g. `smb://…` / Globus endpoint / `rsync -av <host>:<path> ~/pmt-data/`
+they are not yours to redistribute. They live on the group's internal share;
+contact L. Bailloeul for access.
 
 Download once, then point `pmtdeconv` at wherever you put it:
 
@@ -319,7 +319,7 @@ input fails fast at the step that needs it.
 ## Quick start
 
 ```bash
-# 0. Install first (see above): cd bailloeulScripts && pip install -e .
+# 0. Install first (see above): cd pmtdeconv && pip install -e .
 
 # 1. Point at your data (dir holding flattened_Run*.root etc.):
 export PMTDECONV_DATA_ROOT=/path/to/your/data    # or pass --data-root on each command
@@ -411,21 +411,17 @@ na22 and cd109 this is the calibrated Cd109 stacked template shipped in
 
 ## Data layout
 
-Scripts derive paths dynamically:
-
-```python
-PROJECT_ROOT = Path(__file__).resolve().parent.parent   # bailloeulScripts/
-OUTPUTS_DIR  = PROJECT_ROOT / "outputs"
-DATA_DIR     = PROJECT_ROOT.parent.parent.parent / "data"
-```
-
-Expected ROOT files:
+The data root resolves as: the `PMTDECONV_DATA_ROOT` environment variable →
+the nearest `data/` directory (holding a known dataset folder such as
+`Na22_lab/`) found walking up from the package → a legacy fixed-depth
+fallback. `--data-root` overrides the per-dataset directory directly, and
+`pmtdeconv info datasets` prints what each dataset resolves to. Outputs go to
+`outputs/` in the repo root. A dataset folder holds the run files side by side:
 
 ```
-LANL/data/Na22_lab/
-├── flattened_Run65163.root
-├── flattened_Run65166.root
-└── flattened_Run65213.root
+<data root>/Na22_lab/
+├── flattened_Run65213.root      # waveforms: hits, area, raw-area mqana
+└── Run65213.root                # DRSprocessing: raw-area drs, plot energy
 ```
 
 ## Using `pmtdeconv` (unified CLI)
@@ -938,11 +934,13 @@ silently trusted:
   until σ matches 0.076 and re-measure 3 ns efficiency. Calibrations are
   documented in `pmtdeconv/sim/tang2024_paper.py`.
 
-  Separately, our own arms currently score near zero at 3–6 ns on this MC
-  because the veto chain (`no_raw_peak`, `afterpulse_veto`) deletes the
-  second hit that the deconvolution *does* find (≥2 peaks in 94% of 5 ns
-  events). The head-to-head therefore measures our veto configuration there,
-  not our deconvolution.
+  Our own `stft` arm (default pipeline + vetoes), re-measured 2026-10-24
+  after the `no_raw_peak` delay fix: two-hit recognition 0/0.23/0.85/0.91/0.87
+  at 3/4/5/6/8 ns against the paper arm's 0.03/0.49/0.86/0.95/0.89, so it
+  matches from 5 ns up and trails only below. Charge on the 0–20 PE mix is
+  looser: ratio σ 0.149 vs 0.105, nonlinearity 9.1% vs 5.3%. (Before the fix
+  the veto chain deleted the second hit and this arm scored near zero at
+  3–6 ns.)
 
   The `--stft-threshold-mode fixed` knob on the PIPELINE (renamed from
   `absolute` on 2026-09-18, with `--stft-abs-threshold` →

@@ -238,7 +238,12 @@ def sample_noise_sigma(x) -> float:
     d = d[np.isfinite(d)]
     if d.size == 0:
         return 0.0
-    return float(1.4826 * np.median(np.abs(d - np.median(d))) / np.sqrt(2.0))
+    mad = np.median(np.abs(d - np.median(d)))
+    if mad == 0:
+        # Integer-ADC records with sub-count noise: most differences are exactly
+        # 0, so the MAD is 0 and the raw-SNR gate would switch itself off.
+        return float(np.std(d) / np.sqrt(2.0))
+    return float(1.4826 * mad / np.sqrt(2.0))
 
 
 def _longest_true_run(mask: np.ndarray) -> int:

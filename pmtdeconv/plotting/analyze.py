@@ -363,7 +363,7 @@ def analyze(csv_path, label="", channels=None, q_range=(None, None),
 
     if ipulse is not None:
         if "ipulse" not in df.columns:
-            print(f"  [warn] ipulse column not in CSV — ignoring --ipulse filter")
+            print("  [warn] ipulse column not in CSV — ignoring --ipulse filter")
         else:
             df = df[df["ipulse"] == ipulse]
             label = f"{label} ipulse={ipulse}"
@@ -406,7 +406,7 @@ def analyze(csv_path, label="", channels=None, q_range=(None, None),
                                            output_dir=output_dir))
 
     # Per-channel summary
-    print(f"\n  Per-channel charge summary:")
+    print("\n  Per-channel charge summary:")
     has_det = "det" in df.columns
     if has_det:
         print(f"  {'Det':<6} {'Chan':<6} {'N hits':<8} {'Mean':<12} {'Median':<12} {'Std':<12}")

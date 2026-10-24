@@ -81,7 +81,7 @@ def _list_presets(args: argparse.Namespace) -> int:
         if cfg.references:
             print(f"    references   : {', '.join(cfg.references)}")
         print(f"    description  : {cfg.description}")
-        print(f"    overrides    :")
+        print("    overrides    :")
         for k, v in cfg.overrides.items():
             print(f"        {k:<20} = {v!r}")
         print()

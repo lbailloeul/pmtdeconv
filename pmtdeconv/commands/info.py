@@ -131,13 +131,13 @@ def _info_offline_file(args) -> int:
             print("  [warn] no 't' tree found")
             return 1
         keys = set(f[t_key].keys())
-    print(f"  time fields present (for --time-field):")
+    print("  time fields present (for --time-field):")
     for tf in ALLOWED_TIME_FIELDS:
         mark = "✓" if tf in keys else "·"
         print(f"    {mark} {tf}")
 
     # First-event sample
-    print(f"  first event sample (aggregated rows):")
+    print("  first event sample (aggregated rows):")
     n = 0
     for row in iter_offline_run(path, entry_stop=1):
         print(f"    {row.branch:<10}  "

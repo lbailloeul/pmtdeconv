@@ -188,7 +188,6 @@ def scan_timewalk(
         starts = np.arange(a_scan_start, a_scan_stop + 1e-9, a_scan_step)
         if reverse:
             starts = starts[::-1]
-    centers = starts + 0.5 * width
 
     # Histogram bin edges for the per-window Δt fit. The half-bin shift
     # (2026-06-10) keeps sample-grid Δt values at bin CENTERS: when

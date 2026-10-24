@@ -35,15 +35,13 @@ def root_rainbow():
         (0.85, "#ff9a00"), (1.00, "#e11900"),
     ]
     cmap = LinearSegmentedColormap.from_list("root_rainbow", stops, N=256)
-    cmap.set_under("white")
-    return cmap
+    return cmap.with_extremes(under="white")
 
 
 def root_viridis():
     """viridis with white under-color (empty bins), as in the Run-65213 area map."""
     cmap = mpl.colormaps["viridis"].copy()
-    cmap.set_under("white")
-    return cmap
+    return cmap.with_extremes(under="white")
 
 
 # ── rcParams contexts ────────────────────────────────────────────────────────

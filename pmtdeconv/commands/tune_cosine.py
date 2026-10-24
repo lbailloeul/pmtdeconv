@@ -328,7 +328,6 @@ def run(args: argparse.Namespace) -> int:
                 winner_row = near.sort_values(
                     ["width_fwhm_ns", "abs_drift", "cosine_cutoff_mhz"]).iloc[0]
                 selection = "effmax_mindrift"
-            winner_cut = float(winner_row["cosine_cutoff_mhz"])
         else:
             # Nothing passed even the loose drift gate with a finite FWHM;
             # fall back to the composite-score minimum (and flag it).
