@@ -290,12 +290,9 @@ def run_area(events: Iterable[AreaEvent], *, dt_ns: float,
         u_rec = _deconvolve(y_sub, r_cal, filt, n_fft)
 
         if do_denoise:
-            # The SWT is periodic. A cropped padded window does not wrap, so
-            # its N-1 -> 0 jump becomes a spike at t=0; mirroring removes the
-            # jump and keeps the window's own noise level.
-            ext = np.concatenate([u_rec, u_rec[::-1]]) if n_fft != N else u_rec
-            u_rec = wavelet_denoise(ext, wavelet=wavelet, level=wlevel,
-                                    mode=denoise_mode, thresh_k=thresh_k)[:N]
+            u_rec = wavelet_denoise(u_rec, wavelet=wavelet, level=wlevel,
+                                    mode=denoise_mode, thresh_k=thresh_k,
+                                    mirror=n_fft != N)
 
         rows.extend(area.finalize(u_rec, N, dt_ns, row_base))
 
@@ -378,7 +375,7 @@ def _mad_sigma(x) -> float:
     return max(1.4826 * float(np.median(np.abs(x - np.median(x)))), 1e-12)
 
 
-def _denoise_u(u, args):
+def _denoise_u(u, args, mirror=False):
     """Apply the configured wavelet denoiser (or pass through) via the ONE
     shared dispatch (`pipeline.denoise.denoise`) — hits, area, and every
     tuner/benchmark literally share the same code path (2026-07-28)."""
@@ -387,7 +384,7 @@ def _denoise_u(u, args):
     from pmtdeconv.pipeline.denoise import denoise
     return denoise(u, denoiser="wavelet", wavelet=args.wavelet,
                    wlevel=args.wlevel, wmode=args.wmode,
-                   wthresh_k=args.wthresh_k)
+                   wthresh_k=args.wthresh_k, wmirror=mirror)
 
 
 def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
@@ -529,7 +526,7 @@ def _process_event(rec, args, profile, ch_templates, cosine_cutoff_mhz,
             stft_fixed_threshold=getattr(args, "stft_fixed_threshold", None),
         )
     else:
-        u_rec = _denoise_u(u_rec, args)
+        u_rec = _denoise_u(u_rec, args, mirror=n_fft != N)
     if sink.should_dump(entry_i):
         sink.save_array(entry_i, branch, "deconv_post_denoise", u_rec)
 

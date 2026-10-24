@@ -134,12 +134,10 @@ def test_area_charge_degrades_gracefully_under_noise(regime_root, tmp_path):
          "--data-root", str(rd), "--runs", "0")
     m = score_run(tmp_path / "a" / "areas_run0.csv",
                   rd / "flattened_Run0.truth.csv", mode="area")
-    # Padded (2026-10-21) measures 0.856; circular measured 1.00 only because
-    # the wavelet's wrap averaged the window start with its negative end. The
-    # remaining losses are low-SNR left_edge vetoes; real 65213 keeps MORE
-    # photopeak events padded (3393 recovered vs 1181 tiny-area dropped).
-    assert m["efficiency"] >= 0.85, m
-    assert m["charge_scatter"] < 0.30, m            # measured 0.13
+    # Measured 0.981 / scatter 0.109 (0.4.0 and 0.4.1, padded + mirrored
+    # wavelet); the remaining losses are low-SNR left_edge vetoes.
+    assert m["efficiency"] >= 0.95, m
+    assert m["charge_scatter"] < 0.20, m
 
 
 def test_area_charge_on_tall_unclipped_pulses(regime_root, tmp_path):

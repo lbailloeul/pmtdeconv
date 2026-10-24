@@ -322,6 +322,7 @@ def wavelet_denoise(
     level: int = 5,
     mode: str = "soft",
     thresh_k: float = 1.0,
+    mirror: bool = False,
 ) -> np.ndarray:
     """
     Stationary (undecimated) wavelet denoiser — shift-invariant.
@@ -345,6 +346,12 @@ def wavelet_denoise(
     thresh_k : float
         Multiplier on the universal threshold. 1.0 = vanilla Donoho;
         2.0–3.0 for STFT-like sparse output.
+    mirror : bool
+        The SWT treats its input as periodic. A window cropped from a
+        zero-padded deconvolution does not wrap, so its last-to-first jump
+        becomes spurious peaks at both edges. ``mirror=True`` denoises
+        ``u`` followed by its reverse (which does wrap) and keeps the
+        universal threshold at ``len(u)``, so only the edges change.
 
     Returns
     -------
@@ -385,9 +392,10 @@ def wavelet_denoise(
             "Use a discrete wavelet: sym*, db*, coif*, bior*, haar."
         )
 
+    x = np.concatenate([u, u[::-1]]) if mirror else u
     # SWT requires length divisible by 2**level
-    pad_total = (-N) % (2 ** level)
-    u_work = np.pad(u, (0, pad_total), mode="edge") if pad_total else np.asarray(u, dtype=np.float64)
+    pad_total = (-len(x)) % (2 ** level)
+    u_work = np.pad(x, (0, pad_total), mode="edge") if pad_total else np.asarray(x, dtype=np.float64)
 
     # norm=True requires orthogonality; biorthogonal wavelets need norm=False.
     try:
@@ -404,7 +412,7 @@ def wavelet_denoise(
         if sigma <= 0:
             new_coeffs.append((cA, cD))
             continue
-        thr = thresh_k * sigma * np.sqrt(2.0 * np.log(len(cD)))
+        thr = thresh_k * sigma * np.sqrt(2.0 * np.log(N if mirror else len(cD)))
         cD_thr = pywt.threshold(cD, thr, mode=mode)
         new_coeffs.append((cA, cD_thr))
 

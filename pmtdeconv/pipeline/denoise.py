@@ -17,6 +17,7 @@ def denoise(
     wlevel: int = 5,
     wmode: str = "hard",
     wthresh_k: float = 1.0,
+    wmirror: bool = False,
     # stft knobs — defaults match Settings (unified 2026-07-28; previously
     # 200 MHz / 3.0 here, so wrapper callers silently diverged from the
     # pipeline's 175 MHz / 10.0). Amplitude threshold 5 since 2026-10.
@@ -32,7 +33,7 @@ def denoise(
     """
     if denoiser == "wavelet":
         return wavelet_denoise(u_rec, wavelet=wavelet, level=wlevel,
-                               mode=wmode, thresh_k=wthresh_k)
+                               mode=wmode, thresh_k=wthresh_k, mirror=wmirror)
     if denoiser == "stft":
         return stft_denoise(u_rec, dt_ns=dt_ns,
                             nperseg_ns=stft_nperseg_ns,

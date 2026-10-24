@@ -908,6 +908,13 @@ silently trusted:
   noise estimate (record-length dependent) and hard-zeroing that deletes
   sub-threshold few-PE pulses; the cosine filter's derivative discontinuity
   at the cutoff rings (~7% pre-pulse side-lobe — `FIRST_PULSE_MIN_FRAC`).
+  The SWT is periodic, so `hits` and `area` denoise a padded-deconvolution
+  window mirrored (`wavelet_denoise(mirror=True)`, threshold kept at the
+  window length); without it, `hits --denoiser wavelet` put a spurious peak
+  in the first 30 ns of 81/200 events with a late pulse (3/200 with it).
+  With `--no-vetoes`, edge peaks can still pass on low-noise records: the
+  peak threshold uses the post-denoise noise (caveat above), and only the
+  `out_of_time` veto removes them.
 - **Tang-2024 reproduction**: the paper's own method runs as two
   `benchmark denoisers` arms — `tang2024` (their FFT+STFT chain) and
   `tang2024-fft` (plain FFT) — scored against the same MC truth as our arms,
