@@ -30,8 +30,8 @@ belongs to the drsProcessing authors.**
 ## License
 
 No `LICENSE` file was present in the upstream repository at the retrieved
-commit. These files are included solely to run the documented DRS-binary→ROOT
-step; please consult the upstream repository / authors regarding reuse terms.
+commit. These files are redistributed here with the author's permission, to run
+the documented DRS-binary→ROOT step.
 
 ## Updating
 
